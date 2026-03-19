@@ -3,14 +3,14 @@
 import asyncio
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from aiohttp.client_exceptions import ClientError
 from aiomusiccast.musiccast_device import MusicCastDevice
+from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.provider import ProviderManifest
-from zeroconf import ServiceStateChange
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
@@ -21,7 +21,6 @@ from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_PORT,
     PLAYER_ZONE_SPLITTER,
 )
-from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .musiccast import MusicCastController, MusicCastPhysicalDevice, MusicCastZoneDevice
 from .player import MusicCastPlayer, UpnpUpdateHelper
@@ -110,18 +109,22 @@ class MusicCastProvider(PlayerProvider):
         else:
             logging.getLogger("aiomusiccast").setLevel(self.logger.level + 10)
 
-    async def on_mdns_service_state_change(
-        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    async def on_upnp_service_discovered(
+        self, search_target: str, discovery_info: CaseInsensitiveDict
     ) -> None:
-        """Discovery via mdns."""
-        if state_change == ServiceStateChange.Removed:
-            # Wait for connection to fail, same as sonos.
+        """Handle upnp discovery."""
+        location = discovery_info.get("location")
+        if location is None:
             return
-        if info is None:
+        # standard is http://<ip>:49154/MediaRenderer/desc.xml
+        split_url = urlsplit(location)
+        if split_url.port is None or split_url.port != MC_DEVICE_UPNP_PORT:
             return
-        device_ip = get_primary_ip_address(info)
-        if device_ip is None:
+        if split_url.path is None or split_url.path != f"/{MC_DEVICE_UPNP_ENDPOINT}":
             return
+        if split_url.hostname is None:
+            return
+        device_ip = split_url.hostname
         try:
             device_info = await self.mass.http_session.get(
                 f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True

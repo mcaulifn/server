@@ -960,6 +960,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("sonos", True),
     ("bluesound", True),
     ("heos", True),
+    ("musiccast", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

@@ -7,7 +7,7 @@
   "requirements": ["aiomusiccast==0.15.0"],
   "codeowners": ["@fmunkes"],
   "credits": ["[aiomusiccast](https://github.com/vigonotion/aiomusiccast)"],
-  "mdns_discovery": ["_http._tcp.local."],
+  "upnp_discovery": ["upnp:rootdevice"],
   "documentation": "https://music-assistant.io/player-support/musiccast",
   "multi_instance": false
 }
