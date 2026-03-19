@@ -1,6 +1,7 @@
 """MusicCast Provider."""
 
 import asyncio
+import ipaddress
 import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -117,12 +118,27 @@ class MusicCastProvider(PlayerProvider):
         if location is None:
             return
         # standard is http://<ip>:49154/MediaRenderer/desc.xml
-        split_url = urlsplit(location)
-        if split_url.port is None or split_url.port != MC_DEVICE_UPNP_PORT:
+        try:
+            split_url = urlsplit(location)
+        except ValueError:
+            # netloc is checked early in split
+            return
+        if split_url.port is None:
+            return
+        try:
+            if split_url.port != MC_DEVICE_UPNP_PORT:
+                return
+        except ValueError:
+            # a bad port raises a ValueError on read attempt
             return
         if split_url.path is None or split_url.path != f"/{MC_DEVICE_UPNP_ENDPOINT}":
             return
         if split_url.hostname is None:
+            return
+        try:
+            ipaddress.ip_address(split_url.hostname)
+        except ValueError:
+            # not a valid ip address
             return
         device_ip = split_url.hostname
         try:
