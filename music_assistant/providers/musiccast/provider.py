@@ -114,12 +114,12 @@ class MusicCastProvider(PlayerProvider):
         self, search_target: str, discovery_info: CaseInsensitiveDict
     ) -> None:
         """Handle upnp discovery."""
-        location = discovery_info.get("location")
-        if location is None:
+        description_url = discovery_info.get("location")
+        if description_url is None:
             return
         # standard is http://<ip>:49154/MediaRenderer/desc.xml
         try:
-            split_url = urlsplit(location)
+            split_url = urlsplit(description_url)
         except ValueError:
             # netloc is checked early in split
             return
@@ -157,7 +157,6 @@ class MusicCastProvider(PlayerProvider):
         device_id = device_info_json.get("device_id")
         if device_id is None:
             return
-        description_url = f"http://{device_ip}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
 
         _check = await self.mass.http_session.get(description_url)
         if _check.status == 404:
