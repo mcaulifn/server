@@ -280,20 +280,25 @@ class Audiobookshelf(MusicProvider):
         )
         # If we are configured with a non-expiring API key or not.
         self.is_token_user = False
+        self._client_socket: aioabs.SocketClient | None = None
         try:
             if token_api is not None or token_old is not None:
                 _token = token_api if token_api is not None else token_old
                 session_config.token = str(_token)
-                (
-                    self._client,
-                    self._client_socket,
-                ) = await aioabs.get_user_and_socket_client_by_token(session_config=session_config)
+                self._client = await aioabs.get_user_client_by_token(session_config=session_config)
                 self.is_token_user = True
+                self.logger.warning(
+                    "Updates via sockets are currently not supported in ABS when "
+                    "using an API key. The provider remains fully functional, but metadata updates "
+                    "are only reflected via regular library syncs. "
+                    "See: https://github.com/advplyr/audiobookshelf/pull/4974"
+                )
             else:
                 self._client, self._client_socket = await aioabs.get_user_and_socket_client(
                     session_config=session_config, username=username, password=password
                 )
-            await self._client_socket.init_client()
+            if self._client_socket is not None:
+                await self._client_socket.init_client()
         except AbsLoginError as exc:
             raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
 
@@ -348,28 +353,29 @@ for more details.
         # cache username
         self.abs_username = (await self._client.get_my_user()).username
 
-        # set socket callbacks
-        self._client_socket.set_item_callbacks(
-            on_item_added=self._socket_abs_item_changed,
-            on_item_updated=self._socket_abs_item_changed,
-            on_item_removed=self._socket_abs_item_removed,
-            on_items_added=self._socket_abs_item_changed,
-            on_items_updated=self._socket_abs_item_changed,
-        )
+        if self._client_socket is not None:
+            # set socket callbacks
+            self._client_socket.set_item_callbacks(
+                on_item_added=self._socket_abs_item_changed,
+                on_item_updated=self._socket_abs_item_changed,
+                on_item_removed=self._socket_abs_item_removed,
+                on_items_added=self._socket_abs_item_changed,
+                on_items_updated=self._socket_abs_item_changed,
+            )
 
-        self._client_socket.set_user_callbacks(
-            on_user_item_progress_updated=self._socket_abs_user_item_progress_updated,
-        )
+            self._client_socket.set_user_callbacks(
+                on_user_item_progress_updated=self._socket_abs_user_item_progress_updated,
+            )
 
-        self._client_socket.set_refresh_token_expired_callback(
-            on_refresh_token_expired=self._socket_abs_refresh_token_expired
-        )
+            self._client_socket.set_refresh_token_expired_callback(
+                on_refresh_token_expired=self._socket_abs_refresh_token_expired
+            )
 
-        self._client_socket.set_playlist_callbacks(
-            on_playlist_added=self._socket_abs_playlist_changed,
-            on_playlist_updated=self._socket_abs_playlist_changed,
-            on_playlist_removed=self._socket_abs_playlist_removed,
-        )
+            self._client_socket.set_playlist_callbacks(
+                on_playlist_added=self._socket_abs_playlist_changed,
+                on_playlist_updated=self._socket_abs_playlist_changed,
+                on_playlist_removed=self._socket_abs_playlist_removed,
+            )
 
         # progress guard
         self.progress_guard = ProgressGuard()
@@ -398,7 +404,8 @@ for more details.
         """
         try:
             await self._client.logout()
-            await self._client_socket.logout()
+            if self._client_socket is not None:
+                await self._client_socket.logout()
         except AbsError as err:
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
