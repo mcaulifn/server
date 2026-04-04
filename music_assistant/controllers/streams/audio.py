@@ -600,6 +600,11 @@ class StreamsAudio:
                 raise InvalidDataError(f"Access denied to radio stream: {url}") from err
             if err.status >= 500:
                 raise InvalidDataError(f"Radio stream server error (HTTP {err.status}): {url}") from err
+
+            # DEBUG: Check if this is actually a Shoutcast server
+            is_shoutcast = await self._validate_shoutcast_stream(url)
+            self.logger.warning("DEBUG: HTTP %s from %s, _validate_shoutcast_stream=%s", err.status, url, is_shoutcast)
+
             raise InvalidDataError(f"HTTP error {err.status} from {url}") from err
 
         except aiohttp.ClientError as err:
