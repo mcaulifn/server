@@ -593,38 +593,8 @@ class StreamsAudio:
             self.logger.warning("Timeout while parsing radio URL %s", url)
             raise InvalidDataError(f"Timeout connecting to {url}") from err
 
-        except aiohttp.ClientResponseError as err:
-            if err.status == 404:
-                raise MediaNotFoundError(f"Radio stream not found: {url}") from err
-            if err.status == 403:
-                raise InvalidDataError(f"Access denied to radio stream: {url}") from err
-            if err.status >= 500:
-                raise InvalidDataError(f"Radio stream server error (HTTP {err.status}): {url}") from err
-
-            # DEBUG: Check if this is actually a Shoutcast server
-            is_shoutcast = await self._validate_shoutcast_stream(url)
-            self.logger.warning("DEBUG: HTTP %s from %s, _validate_shoutcast_stream=%s", err.status, url, is_shoutcast)
-
-            raise InvalidDataError(f"HTTP error {err.status} from {url}") from err
-
         except aiohttp.ClientError as err:
-            err_msg = str(err)
-
-            if "ICY" in err_msg.upper() or "invalid" in err_msg.lower():
-                self.logger.debug("Checking for legacy Shoutcast stream: %s", url)
-                if await self._validate_shoutcast_stream(url):
-                    result = (url, StreamType.SHOUTCAST)
-                    await mass.cache.set(
-                        url,
-                        result,
-                        expiration=3600 * 3,
-                        provider=CACHE_PROVIDER,
-                        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-                    )
-                    return result
-
-            self.logger.warning("Connection error for radio URL %s: %s", url, str(err))
-            raise InvalidDataError(f"Failed to connect to radio stream: {url}") from err
+            return await self._handle_client_error_for_radio_stream(url, err, stream_type)
 
         result = (resolved_url, stream_type)
         await mass.cache.set(
