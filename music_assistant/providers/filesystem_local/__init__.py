@@ -1151,6 +1151,16 @@ class LocalFileSystemProvider(MusicProvider):
 
         Audiobooks can be single files with embedded chapters or multiple files per folder.
         Only the first file (by track number or alphabetically) is processed as the audiobook.
+
+        Supported folder layouts:
+        - Single file with embedded chapters (e.g. one .m4b file per book).
+        - Multiple files in a single folder, with track (and optionally disc) tags.
+          For multi-disc books, all files must be in the same folder with correct
+          disc and track number tags - they will be sorted by (disc, track).
+        - Multiple files in a single folder without track tags (sorted alphabetically).
+
+        NOT supported: files split across multiple subfolders (e.g. CD1/, CD2/).
+        Each subfolder would be treated as a separate audiobook.
         """
         # Skip files that aren't the first chapter
         track_tag = tags.tags.get("track")
@@ -1820,10 +1830,13 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> tuple[int, list[MediaItemChapter]]:
         """Return chapters for an audiobook.
 
+        All chapter files must reside in the same folder as the audiobook file.
+        Subfolders (e.g. CD1/, CD2/) are not traversed.
+
         Chapter sources in order of preference:
-        1. Multiple files with track tags - sorted by track number
-        2. Single file with embedded chapters - use embedded chapter markers
-        3. Multiple files without track tags - sorted alphabetically (fallback)
+        1. Multiple files with track tags - sorted by (disc number, track number).
+        2. Single file with embedded chapters - use embedded chapter markers.
+        3. Multiple files without track tags - sorted alphabetically (fallback).
         """
         chapters: list[MediaItemChapter] = []
         all_chapter_files: list[tuple[str, float]] = []
