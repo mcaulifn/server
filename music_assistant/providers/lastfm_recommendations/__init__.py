@@ -12,7 +12,7 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import RecommendationFolder  # noqa: TC002
+from music_assistant_models.media_items import RecommendationFolder
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
@@ -238,7 +238,7 @@ class LastFMRecommendationsProvider(MusicProvider):
 
         # Load cached folders so recommendations survive a provider reload.
         cache_key = f"recommendation_folders_{self.instance_id}"
-        cached_folders = await self.mass.cache.get(cache_key)
+        cached_folders = await self.mass.cache.get(cache_key, base_class=RecommendationFolder)
 
         if cached_folders and isinstance(cached_folders, list):
             self._recommendation_folders: list[RecommendationFolder] = cached_folders
@@ -301,7 +301,7 @@ class LastFMRecommendationsProvider(MusicProvider):
             cache_key = f"recommendation_folders_{self.instance_id}"
             await self.mass.cache.set(
                 cache_key,
-                self._recommendation_folders,
+                [folder.to_dict() for folder in self._recommendation_folders],
                 expiration=60 * 60 * 24,
             )
         except MusicAssistantError as err:

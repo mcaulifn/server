@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import random
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
@@ -162,19 +162,20 @@ class LastFMRecommendationManager:
 
         persistent_cache_key = f"artist_{cache_key}"
         cached_artist = await self.mass.cache.get(
-            key=persistent_cache_key, category=CACHE_CATEGORY_RESOLVED_ITEMS
+            key=persistent_cache_key,
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            base_class=Artist,
         )
-        if cached_artist is not None and isinstance(cached_artist, Artist):
-            artist_obj = cast("Artist", cached_artist)
-            self._resolved_cache[cache_key] = artist_obj
-            return artist_obj
+        if isinstance(cached_artist, Artist):
+            self._resolved_cache[cache_key] = cached_artist
+            return cached_artist
 
         artist = await parse_artist(lastfm_artist, self.mass, self.provider.instance_id)
         if artist:
             self._resolved_cache[cache_key] = artist
             await self.mass.cache.set(
                 persistent_cache_key,
-                artist,
+                artist.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
@@ -204,12 +205,13 @@ class LastFMRecommendationManager:
 
         persistent_cache_key = f"track_{cache_key}"
         cached_track = await self.mass.cache.get(
-            key=persistent_cache_key, category=CACHE_CATEGORY_RESOLVED_ITEMS
+            key=persistent_cache_key,
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            base_class=Track,
         )
-        if cached_track is not None and isinstance(cached_track, Track):
-            track_obj = cast("Track", cached_track)
-            self._resolved_cache[cache_key] = track_obj
-            return track_obj
+        if isinstance(cached_track, Track):
+            self._resolved_cache[cache_key] = cached_track
+            return cached_track
 
         track = await parse_track(
             lastfm_track, self.mbid_resolver, self.mass, self.provider.instance_id
@@ -218,7 +220,7 @@ class LastFMRecommendationManager:
             self._resolved_cache[cache_key] = track
             await self.mass.cache.set(
                 persistent_cache_key,
-                track,
+                track.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
@@ -248,19 +250,20 @@ class LastFMRecommendationManager:
 
         persistent_cache_key = f"album_{cache_key}"
         cached_album = await self.mass.cache.get(
-            key=persistent_cache_key, category=CACHE_CATEGORY_RESOLVED_ITEMS
+            key=persistent_cache_key,
+            category=CACHE_CATEGORY_RESOLVED_ITEMS,
+            base_class=Album,
         )
-        if cached_album is not None and isinstance(cached_album, Album):
-            album_obj = cast("Album", cached_album)
-            self._resolved_cache[cache_key] = album_obj
-            return album_obj
+        if isinstance(cached_album, Album):
+            self._resolved_cache[cache_key] = cached_album
+            return cached_album
 
         album = await parse_album(lastfm_album, self.mass, self.provider.instance_id)
         if album:
             self._resolved_cache[cache_key] = album
             await self.mass.cache.set(
                 persistent_cache_key,
-                album,
+                album.to_dict(),
                 category=CACHE_CATEGORY_RESOLVED_ITEMS,
                 expiration=CACHE_EXPIRATION_SECONDS,
             )
