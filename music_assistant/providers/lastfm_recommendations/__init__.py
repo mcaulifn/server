@@ -243,7 +243,7 @@ class LastFMRecommendationsProvider(MusicProvider):
         if cached_folders and isinstance(cached_folders, list):
             self._recommendation_folders: list[RecommendationFolder] = cached_folders
             self._recommendations_populated = True
-            self.logger.info("Loaded %d recommendation folders from cache", len(cached_folders))
+            self.logger.debug("Loaded %d recommendation folders from cache", len(cached_folders))
         else:
             self._recommendation_folders = []
             self._recommendations_populated = False
@@ -256,12 +256,12 @@ class LastFMRecommendationsProvider(MusicProvider):
         try:
             # Wait for other providers (e.g. Spotify) to finish loading before resolving items,
             # otherwise resolution fails when no streaming providers are available yet.
-            self.logger.info(
-                "Waiting 20 seconds for other providers to load before building recommendations..."
+            self.logger.debug(
+                "Waiting 20 seconds for other providers to load before building recommendations"
             )
             await asyncio.sleep(20)
 
-            self.logger.info("Starting background population of recommendations")
+            self.logger.info("Building Last.fm recommendations")
 
             # Build folders incrementally so each category appears as soon as it's ready.
             personalized_folders = (
@@ -269,32 +269,32 @@ class LastFMRecommendationsProvider(MusicProvider):
             )
             if personalized_folders:
                 self._recommendation_folders.extend(personalized_folders)
-                self.logger.info(
+                self.logger.debug(
                     "Added %d personalized recommendation folder(s)", len(personalized_folders)
                 )
 
             global_folders = await self.recommendations_manager._get_global_recommendations()
             if global_folders:
                 self._recommendation_folders.extend(global_folders)
-                self.logger.info("Added %d global recommendation folder(s)", len(global_folders))
+                self.logger.debug("Added %d global recommendation folder(s)", len(global_folders))
 
             genre_folders = await self.recommendations_manager._get_genre_based_recommendations()
             if genre_folders:
                 self._recommendation_folders.extend(genre_folders)
-                self.logger.info(
+                self.logger.debug(
                     "Added %d genre-based recommendation folder(s)", len(genre_folders)
                 )
 
             geo_folders = await self.recommendations_manager._get_geo_based_recommendations()
             if geo_folders:
                 self._recommendation_folders.extend(geo_folders)
-                self.logger.info(
+                self.logger.debug(
                     "Added %d geography-based recommendation folder(s)", len(geo_folders)
                 )
 
             self._recommendations_populated = True
             self.logger.info(
-                "Recommendations fully populated with %d total folders",
+                "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),
             )
 
@@ -315,7 +315,7 @@ class LastFMRecommendationsProvider(MusicProvider):
         else:
             refresh_interval_hours = 6
         if refresh_interval_hours <= 0:
-            self.logger.info("Automatic refresh disabled (interval set to 0)")
+            self.logger.debug("Automatic refresh disabled (interval set to 0)")
             return
 
         refresh_interval_seconds = float(refresh_interval_hours * 3600)
@@ -325,14 +325,14 @@ class LastFMRecommendationsProvider(MusicProvider):
             self._refresh_recommendations,
             task_id=f"lastfm_recommendations_refresh_{self.instance_id}",
         )
-        self.logger.info(
+        self.logger.debug(
             "Scheduled next recommendations refresh in %d hours", refresh_interval_hours
         )
 
     async def _refresh_recommendations(self) -> None:
         """Re-populate recommendations and reschedule the next refresh."""
         try:
-            self.logger.info("Refreshing Last.fm recommendations (scheduled)")
+            self.logger.debug("Refreshing Last.fm recommendations (scheduled)")
             await self._populate_recommendations()
         except MusicAssistantError as err:
             self.logger.warning("Failed to refresh recommendations: %s", err)

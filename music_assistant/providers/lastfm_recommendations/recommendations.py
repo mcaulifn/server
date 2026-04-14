@@ -346,7 +346,7 @@ class LastFMRecommendationManager:
                 top_artists = UniqueList(deduplicated)
 
                 if len(top_artists) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Global Top Artists: only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         len(top_artists),
@@ -378,7 +378,7 @@ class LastFMRecommendationManager:
                 top_tracks = UniqueList(deduplicated_tracks)
 
                 if len(top_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Global Top Tracks: only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         len(top_tracks),
@@ -451,7 +451,7 @@ class LastFMRecommendationManager:
                 genre_artists = UniqueList(deduplicated)
 
                 if len(genre_artists) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Genre Artists (%s): only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         tag_name,
@@ -497,7 +497,7 @@ class LastFMRecommendationManager:
                 genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
 
                 if len(genre_albums) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Genre Albums (%s): only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         tag_name,
@@ -545,7 +545,7 @@ class LastFMRecommendationManager:
                 genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
 
                 if len(genre_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Genre Tracks (%s): only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         tag_name,
@@ -589,7 +589,7 @@ class LastFMRecommendationManager:
                 geo_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
                 if len(geo_artists) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Geo Top Artists (%s): only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         country,
@@ -623,7 +623,7 @@ class LastFMRecommendationManager:
                 geo_tracks = list(UniqueList(all_resolved_geo_tracks))[:TARGET_ITEM_COUNT]
 
                 if len(geo_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.info(
+                    self.logger.debug(
                         "Geo Top Tracks (%s): only %d/%d items after resolution "
                         "(requested %d, resolved %d)",
                         country,
@@ -706,7 +706,7 @@ class LastFMRecommendationManager:
         result = [artist for artist in resolved_artists if artist is not None]
 
         if len(result) < len(resolved_artists):
-            self.logger.info(
+            self.logger.debug(
                 "Similar artists: %d/%d resolved successfully (%d failed)",
                 len(result),
                 len(resolved_artists),
