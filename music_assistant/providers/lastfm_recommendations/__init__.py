@@ -131,59 +131,36 @@ async def get_config_entries(
             range=(0, 168),  # 0 to 1 week
         ),
         ConfigEntry(
-            key="enable_similar_artists",
+            key="enable_personalized",
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Similar Artists (Personalized)",
+            label="Enable Personalized Recommendations",
             default_value=False,
-            description="Show similar artists based on your listening history",
+            description=(
+                "Provide 'Similar Artists' and 'Similar Tracks' rows based on your "
+                "listening history"
+            ),
             category="recommendations",
         ),
         ConfigEntry(
-            key="enable_similar_tracks",
+            key="enable_global_charts",
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Similar Tracks (Personalized)",
+            label="Enable Global Charts",
             default_value=False,
-            description="Show similar tracks based on your listening history",
+            description=(
+                "Provide 'Global Top Artists' and 'Global Top Tracks' rows from "
+                "Last.fm's worldwide charts"
+            ),
             category="recommendations",
         ),
         ConfigEntry(
-            key="enable_top_artists",
+            key="enable_genre",
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Global Top Artists",
+            label="Enable Genre Recommendations",
             default_value=False,
-            description="Show worldwide top artists chart from Last.fm",
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key="enable_top_tracks",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Global Top Tracks",
-            default_value=False,
-            description="Show worldwide top tracks chart from Last.fm",
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key="enable_genre_artists",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Artists",
-            default_value=False,
-            description="Show top artists from your most played genre (requires username)",
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key="enable_genre_albums",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Albums",
-            default_value=False,
-            description="Show top albums from your most played genre (requires username)",
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key="enable_genre_tracks",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Tracks",
-            default_value=False,
-            description="Show top tracks from your most played genre (requires username)",
+            description=(
+                "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your "
+                "most played genre (requires username)"
+            ),
             category="recommendations",
         ),
         ConfigEntry(
@@ -196,19 +173,11 @@ async def get_config_entries(
             category="recommendations",
         ),
         ConfigEntry(
-            key="enable_geo_artists",
+            key="enable_geo",
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Top Artists",
+            label="Enable Geographic Charts",
             default_value=False,
-            description="Show top artists from selected country",
-            category="recommendations",
-        ),
-        ConfigEntry(
-            key="enable_geo_tracks",
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Top Tracks",
-            default_value=False,
-            description="Show top tracks from selected country",
+            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
             category="recommendations",
         ),
         ConfigEntry(

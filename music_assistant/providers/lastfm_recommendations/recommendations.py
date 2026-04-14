@@ -288,48 +288,49 @@ class LastFMRecommendationManager:
         """Return personalized recommendation folders based on the user's listening history."""
         folders: list[RecommendationFolder] = []
 
+        if not self.provider.config.get_value("enable_personalized"):
+            return folders
+
         # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
         # play_count, possibly weighted. Needs user feedback.
 
-        if self.provider.config.get_value("enable_similar_artists"):
-            top_artists = await self.mass.music.artists.library_items(
-                limit=TOP_ARTISTS_LIMIT, order_by="play_count_desc"
-            )
+        top_artists = await self.mass.music.artists.library_items(
+            limit=TOP_ARTISTS_LIMIT, order_by="play_count_desc"
+        )
 
-            if top_artists:
-                similar_artists = await self._get_similar_artists_from_seeds(top_artists)
+        if top_artists:
+            similar_artists = await self._get_similar_artists_from_seeds(top_artists)
 
-                if similar_artists:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_similar_artists",
-                            name="Discover Similar Artists",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
-                            subtitle=f"Based on your top {len(top_artists)} artists",
-                            icon="mdi-account-music-outline",
-                        )
+            if similar_artists:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_similar_artists",
+                        name="Discover Similar Artists",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
+                        subtitle=f"Based on your top {len(top_artists)} artists",
+                        icon="mdi-account-music-outline",
                     )
+                )
 
-        if self.provider.config.get_value("enable_similar_tracks"):
-            top_tracks = await self.mass.music.tracks.library_items(
-                limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
-            )
+        top_tracks = await self.mass.music.tracks.library_items(
+            limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
+        )
 
-            if top_tracks:
-                similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
+        if top_tracks:
+            similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
 
-                if similar_tracks:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_similar_tracks",
-                            name="Discover Similar Tracks",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
-                            subtitle=f"Based on your top {len(top_tracks)} tracks",
-                            icon="mdi-music-note-outline",
-                        )
+            if similar_tracks:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_similar_tracks",
+                        name="Discover Similar Tracks",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
+                        subtitle=f"Based on your top {len(top_tracks)} tracks",
+                        icon="mdi-music-note-outline",
                     )
+                )
 
         return folders
 
@@ -337,70 +338,71 @@ class LastFMRecommendationManager:
         """Return global chart recommendation folders (worldwide top artists and tracks)."""
         folders: list[RecommendationFolder] = []
 
-        if self.provider.config.get_value("enable_top_artists"):
-            # Over-fetch so deduplication and resolution failures still leave TARGET_ITEM_COUNT.
-            top_artists_raw = await self.api.get_chart_top_artists(limit=RESOLUTION_BUFFER_SMALL)
-            if top_artists_raw:
-                resolved_artists = await asyncio.gather(
-                    *[self._get_or_resolve_artist(artist_data) for artist_data in top_artists_raw]
+        if not self.provider.config.get_value("enable_global_charts"):
+            return folders
+
+        # Over-fetch so deduplication and resolution failures still leave TARGET_ITEM_COUNT.
+        top_artists_raw = await self.api.get_chart_top_artists(limit=RESOLUTION_BUFFER_SMALL)
+        if top_artists_raw:
+            resolved_artists = await asyncio.gather(
+                *[self._get_or_resolve_artist(artist_data) for artist_data in top_artists_raw]
+            )
+            all_resolved = [artist for artist in resolved_artists if artist is not None]
+            deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
+            top_artists = UniqueList(deduplicated)
+
+            if len(top_artists) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Global Top Artists: only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    len(top_artists),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len([a for a in resolved_artists if a is not None]),
                 )
-                all_resolved = [artist for artist in resolved_artists if artist is not None]
-                deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
-                top_artists = UniqueList(deduplicated)
 
-                if len(top_artists) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Global Top Artists: only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        len(top_artists),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len([a for a in resolved_artists if a is not None]),
+            if top_artists:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_chart_top_artists",
+                        name="Global Top Artists",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(top_artists),
+                        subtitle="Most popular artists worldwide",
+                        icon="mdi-chart-line",
                     )
-
-                if top_artists:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_chart_top_artists",
-                            name="Global Top Artists",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(top_artists),
-                            subtitle="Most popular artists worldwide",
-                            icon="mdi-chart-line",
-                        )
-                    )
-
-        if self.provider.config.get_value("enable_top_tracks"):
-            top_tracks_raw = await self.api.get_chart_top_tracks(limit=RESOLUTION_BUFFER_SMALL)
-            if top_tracks_raw:
-                resolved_tracks = await asyncio.gather(
-                    *[self._get_or_resolve_track(track_data) for track_data in top_tracks_raw]
                 )
-                all_resolved_tracks = [track for track in resolved_tracks if track is not None]
-                deduplicated_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
-                top_tracks = UniqueList(deduplicated_tracks)
 
-                if len(top_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Global Top Tracks: only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        len(top_tracks),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len(all_resolved_tracks),
-                    )
+        top_tracks_raw = await self.api.get_chart_top_tracks(limit=RESOLUTION_BUFFER_SMALL)
+        if top_tracks_raw:
+            resolved_tracks = await asyncio.gather(
+                *[self._get_or_resolve_track(track_data) for track_data in top_tracks_raw]
+            )
+            all_resolved_tracks = [track for track in resolved_tracks if track is not None]
+            deduplicated_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
+            top_tracks = UniqueList(deduplicated_tracks)
 
-                if top_tracks:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_chart_top_tracks",
-                            name="Global Top Tracks",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(top_tracks),
-                            subtitle="Most popular tracks worldwide",
-                            icon="mdi-chart-box",
-                        )
+            if len(top_tracks) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Global Top Tracks: only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    len(top_tracks),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len(all_resolved_tracks),
+                )
+
+            if top_tracks:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_chart_top_tracks",
+                        name="Global Top Tracks",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(top_tracks),
+                        subtitle="Most popular tracks worldwide",
+                        icon="mdi-chart-box",
                     )
+                )
 
         return folders
 
@@ -410,6 +412,9 @@ class LastFMRecommendationManager:
         Requires a username to be configured.
         """
         folders: list[RecommendationFolder] = []
+
+        if not self.provider.config.get_value("enable_genre"):
+            return folders
 
         username = self.provider.config.get_value("username")
         if not username or not isinstance(username, str):
@@ -423,152 +428,144 @@ class LastFMRecommendationManager:
         if not tag_name:
             return folders
 
-        if self.provider.config.get_value("enable_genre_artists"):
-            # Over-fetch so there's enough left after library filtering and resolution failures.
-            genre_artists_raw = await self.api.get_tag_top_artists(
-                tag_name, limit=RESOLUTION_BUFFER_LARGE
+        # Over-fetch so there's enough left after library filtering and resolution failures.
+        genre_artists_raw = await self.api.get_tag_top_artists(
+            tag_name, limit=RESOLUTION_BUFFER_LARGE
+        )
+        if genre_artists_raw:
+            # Drop items already in the library using a cheap DB lookup, before the
+            # expensive MusicBrainz + provider resolution step.
+            non_library_artists_raw = [
+                artist_data
+                for artist_data in genre_artists_raw
+                if not await self._is_in_library(artist_data, MediaType.ARTIST)
+            ]
+
+            sampled_artists_raw = self._sample_items(
+                non_library_artists_raw,
+                seed_suffix="genre_artists",
+                target_count=RESOLUTION_BUFFER_SMALL,
             )
-            if genre_artists_raw:
-                # Drop items already in the library using a cheap DB lookup, before the
-                # expensive MusicBrainz + provider resolution step.
-                non_library_artists_raw = [
-                    artist_data
-                    for artist_data in genre_artists_raw
-                    if not await self._is_in_library(artist_data, MediaType.ARTIST)
-                ]
 
-                sampled_artists_raw = self._sample_items(
-                    non_library_artists_raw,
-                    seed_suffix="genre_artists",
-                    target_count=RESOLUTION_BUFFER_SMALL,
-                )
-
-                resolved_artists = await asyncio.gather(
-                    *[
-                        self._get_or_resolve_artist(artist_data)
-                        for artist_data in sampled_artists_raw
-                    ]
-                )
-                all_resolved = [artist for artist in resolved_artists if artist is not None]
-                deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
-                genre_artists = UniqueList(deduplicated)
-
-                if len(genre_artists) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Genre Artists (%s): only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        tag_name,
-                        len(genre_artists),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len([a for a in resolved_artists if a is not None]),
-                    )
-
-                if genre_artists:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_genre_artists",
-                            name=f"Discover {tag_name.title()} Artists",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(genre_artists),
-                            subtitle="Top artists in your most played genre",
-                            icon="mdi-account-music",
-                        )
-                    )
-
-        if self.provider.config.get_value("enable_genre_albums"):
-            genre_albums_raw = await self.api.get_tag_top_albums(
-                tag_name, limit=RESOLUTION_BUFFER_LARGE
+            resolved_artists = await asyncio.gather(
+                *[self._get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
             )
-            if genre_albums_raw:
-                non_library_albums_raw = [
-                    album_data
-                    for album_data in genre_albums_raw
-                    if not await self._is_in_library(album_data, MediaType.ALBUM)
-                ]
+            all_resolved = [artist for artist in resolved_artists if artist is not None]
+            deduplicated = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
+            genre_artists = UniqueList(deduplicated)
 
-                sampled_albums_raw = self._sample_items(
-                    non_library_albums_raw,
-                    seed_suffix="genre_albums",
-                    target_count=RESOLUTION_BUFFER_SMALL,
+            if len(genre_artists) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Genre Artists (%s): only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    tag_name,
+                    len(genre_artists),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len([a for a in resolved_artists if a is not None]),
                 )
 
-                resolved_albums = await asyncio.gather(
-                    *[self._get_or_resolve_album(album_data) for album_data in sampled_albums_raw]
+            if genre_artists:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_genre_artists",
+                        name=f"Discover {tag_name.title()} Artists",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(genre_artists),
+                        subtitle="Top artists in your most played genre",
+                        icon="mdi-account-music",
+                    )
                 )
-                all_resolved_albums = [album for album in resolved_albums if album is not None]
-                genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
 
-                if len(genre_albums) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Genre Albums (%s): only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        tag_name,
-                        len(genre_albums),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len(all_resolved_albums),
-                    )
+        genre_albums_raw = await self.api.get_tag_top_albums(
+            tag_name, limit=RESOLUTION_BUFFER_LARGE
+        )
+        if genre_albums_raw:
+            non_library_albums_raw = [
+                album_data
+                for album_data in genre_albums_raw
+                if not await self._is_in_library(album_data, MediaType.ALBUM)
+            ]
 
-                if genre_albums:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_genre_albums",
-                            name=f"Discover {tag_name.title()} Albums",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(genre_albums),
-                            subtitle="Top albums in your most played genre",
-                            icon="mdi-album",
-                        )
-                    )
-
-        if self.provider.config.get_value("enable_genre_tracks"):
-            genre_tracks_raw = await self.api.get_tag_top_tracks(
-                tag_name, limit=RESOLUTION_BUFFER_LARGE
+            sampled_albums_raw = self._sample_items(
+                non_library_albums_raw,
+                seed_suffix="genre_albums",
+                target_count=RESOLUTION_BUFFER_SMALL,
             )
-            if genre_tracks_raw:
-                non_library_tracks_raw = [
-                    track_data
-                    for track_data in genre_tracks_raw
-                    if not await self._is_in_library(track_data, MediaType.TRACK)
-                ]
 
-                sampled_tracks_raw = self._sample_items(
-                    non_library_tracks_raw,
-                    seed_suffix="genre_tracks",
-                    target_count=RESOLUTION_BUFFER_SMALL,
+            resolved_albums = await asyncio.gather(
+                *[self._get_or_resolve_album(album_data) for album_data in sampled_albums_raw]
+            )
+            all_resolved_albums = [album for album in resolved_albums if album is not None]
+            genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
+
+            if len(genre_albums) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Genre Albums (%s): only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    tag_name,
+                    len(genre_albums),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len(all_resolved_albums),
                 )
 
-                resolved_tracks = await asyncio.gather(
-                    *[self._get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
+            if genre_albums:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_genre_albums",
+                        name=f"Discover {tag_name.title()} Albums",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(genre_albums),
+                        subtitle="Top albums in your most played genre",
+                        icon="mdi-album",
+                    )
                 )
-                all_resolved_genre_tracks = [
-                    track for track in resolved_tracks if track is not None
-                ]
-                genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
 
-                if len(genre_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Genre Tracks (%s): only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        tag_name,
-                        len(genre_tracks),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len(all_resolved_genre_tracks),
-                    )
+        genre_tracks_raw = await self.api.get_tag_top_tracks(
+            tag_name, limit=RESOLUTION_BUFFER_LARGE
+        )
+        if genre_tracks_raw:
+            non_library_tracks_raw = [
+                track_data
+                for track_data in genre_tracks_raw
+                if not await self._is_in_library(track_data, MediaType.TRACK)
+            ]
 
-                if genre_tracks:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_genre_tracks",
-                            name=f"Discover {tag_name.title()} Tracks",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(genre_tracks),
-                            subtitle="Top tracks in your most played genre",
-                            icon="mdi-music",
-                        )
+            sampled_tracks_raw = self._sample_items(
+                non_library_tracks_raw,
+                seed_suffix="genre_tracks",
+                target_count=RESOLUTION_BUFFER_SMALL,
+            )
+
+            resolved_tracks = await asyncio.gather(
+                *[self._get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
+            )
+            all_resolved_genre_tracks = [track for track in resolved_tracks if track is not None]
+            genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
+
+            if len(genre_tracks) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Genre Tracks (%s): only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    tag_name,
+                    len(genre_tracks),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len(all_resolved_genre_tracks),
+                )
+
+            if genre_tracks:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_genre_tracks",
+                        name=f"Discover {tag_name.title()} Tracks",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(genre_tracks),
+                        subtitle="Top tracks in your most played genre",
+                        icon="mdi-music",
                     )
+                )
 
         return folders
 
@@ -576,77 +573,74 @@ class LastFMRecommendationManager:
         """Return geography-based recommendation folders for the configured country."""
         folders: list[RecommendationFolder] = []
 
+        if not self.provider.config.get_value("enable_geo"):
+            return folders
+
         country = self.provider.config.get_value("geo_country")
         if not country or not isinstance(country, str):
             return folders
 
-        if self.provider.config.get_value("enable_geo_artists"):
-            geo_artists_raw = await self.api.get_geo_top_artists(
-                country, limit=RESOLUTION_BUFFER_SMALL
+        geo_artists_raw = await self.api.get_geo_top_artists(country, limit=RESOLUTION_BUFFER_SMALL)
+        if geo_artists_raw:
+            resolved_artists = await asyncio.gather(
+                *[self._get_or_resolve_artist(artist_data) for artist_data in geo_artists_raw]
             )
-            if geo_artists_raw:
-                resolved_artists = await asyncio.gather(
-                    *[self._get_or_resolve_artist(artist_data) for artist_data in geo_artists_raw]
+            all_resolved = [artist for artist in resolved_artists if artist is not None]
+            geo_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
+
+            if len(geo_artists) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Geo Top Artists (%s): only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    country,
+                    len(geo_artists),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len([a for a in resolved_artists if a is not None]),
                 )
-                all_resolved = [artist for artist in resolved_artists if artist is not None]
-                geo_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
-                if len(geo_artists) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Geo Top Artists (%s): only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        country,
-                        len(geo_artists),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len([a for a in resolved_artists if a is not None]),
+            if geo_artists:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_geo_artists",
+                        name=f"Top artists for {country}",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(geo_artists),
+                        subtitle=f"Most popular artists in {country}",
+                        icon="mdi-earth",
                     )
+                )
 
-                if geo_artists:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_geo_artists",
-                            name=f"Top artists for {country}",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(geo_artists),
-                            subtitle=f"Most popular artists in {country}",
-                            icon="mdi-earth",
-                        )
-                    )
-
-        if self.provider.config.get_value("enable_geo_tracks"):
-            geo_tracks_raw = await self.api.get_geo_top_tracks(
-                country, limit=RESOLUTION_BUFFER_SMALL
+        geo_tracks_raw = await self.api.get_geo_top_tracks(country, limit=RESOLUTION_BUFFER_SMALL)
+        if geo_tracks_raw:
+            resolved_tracks = await asyncio.gather(
+                *[self._get_or_resolve_track(track_data) for track_data in geo_tracks_raw]
             )
-            if geo_tracks_raw:
-                resolved_tracks = await asyncio.gather(
-                    *[self._get_or_resolve_track(track_data) for track_data in geo_tracks_raw]
+            all_resolved_geo_tracks = [track for track in resolved_tracks if track is not None]
+            geo_tracks = list(UniqueList(all_resolved_geo_tracks))[:TARGET_ITEM_COUNT]
+
+            if len(geo_tracks) < TARGET_ITEM_COUNT:
+                self.logger.debug(
+                    "Geo Top Tracks (%s): only %d/%d items after resolution "
+                    "(requested %d, resolved %d)",
+                    country,
+                    len(geo_tracks),
+                    TARGET_ITEM_COUNT,
+                    RESOLUTION_BUFFER_SMALL,
+                    len(all_resolved_geo_tracks),
                 )
-                all_resolved_geo_tracks = [track for track in resolved_tracks if track is not None]
-                geo_tracks = list(UniqueList(all_resolved_geo_tracks))[:TARGET_ITEM_COUNT]
 
-                if len(geo_tracks) < TARGET_ITEM_COUNT:
-                    self.logger.debug(
-                        "Geo Top Tracks (%s): only %d/%d items after resolution "
-                        "(requested %d, resolved %d)",
-                        country,
-                        len(geo_tracks),
-                        TARGET_ITEM_COUNT,
-                        RESOLUTION_BUFFER_SMALL,
-                        len(all_resolved_geo_tracks),
+            if geo_tracks:
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{self.provider.instance_id}_geo_tracks",
+                        name=f"Top tracks for {country}",
+                        provider=self.provider.instance_id,
+                        items=UniqueList(geo_tracks),
+                        subtitle=f"Most popular tracks in {country}",
+                        icon="mdi-earth",
                     )
-
-                if geo_tracks:
-                    folders.append(
-                        RecommendationFolder(
-                            item_id=f"{self.provider.instance_id}_geo_tracks",
-                            name=f"Top tracks for {country}",
-                            provider=self.provider.instance_id,
-                            items=UniqueList(geo_tracks),
-                            subtitle=f"Most popular tracks in {country}",
-                            icon="mdi-earth",
-                        )
-                    )
+                )
 
         return folders
 
