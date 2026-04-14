@@ -98,13 +98,10 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # Handle clear cache action
     if action == CONF_ACTION_CLEAR_CACHE and instance_id:
-        # Get the provider instance and clear its cache
         provider = mass.get_provider(instance_id)
         if isinstance(provider, LastFMRecommendationsProvider):
             await provider.recommendations_manager.clear_cache()
-            # Trigger re-population after clearing
             mass.create_task(provider._populate_recommendations())
 
     return (
@@ -231,13 +228,7 @@ async def get_config_entries(
 
 
 class LastFMRecommendationsProvider(MusicProvider):
-    """Last.fm Recommendations Provider for Music Assistant.
-
-    This provider delivers music recommendations from Last.fm based on the user's
-    listening history in Music Assistant. It provides both personalized recommendations
-    (similar artists/tracks to what you listen to) and global discovery recommendations
-    (Last.fm's worldwide top charts).
-    """
+    """Last.fm Recommendations Provider for Music Assistant."""
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -245,8 +236,7 @@ class LastFMRecommendationsProvider(MusicProvider):
         self.mbid_resolver = MBIDResolver(self)
         self.recommendations_manager = LastFMRecommendationManager(self)
 
-        # Try to load cached recommendation folders from persistent storage
-        # This prevents losing recommendations on provider reload
+        # Load cached folders so recommendations survive a provider reload.
         cache_key = f"recommendation_folders_{self.instance_id}"
         cached_folders = await self.mass.cache.get(cache_key)
 
@@ -255,27 +245,17 @@ class LastFMRecommendationsProvider(MusicProvider):
             self._recommendations_populated = True
             self.logger.info("Loaded %d recommendation folders from cache", len(cached_folders))
         else:
-            # Initialize empty recommendation folders (will be populated progressively)
             self._recommendation_folders = []
             self._recommendations_populated = False
-
-            # Start background task to populate recommendations immediately
-            # API key validation happens during first populate attempt
             self.mass.create_task(self._populate_recommendations())
 
-        # Schedule periodic refresh using MA's scheduler
         self._schedule_refresh()
 
     async def _populate_recommendations(self) -> None:
-        """Populate recommendation folders in the background.
-
-        This runs immediately after initialization, building recommendation
-        folders progressively. Each folder appears as soon as it's populated,
-        allowing the frontend to display results incrementally.
-        """
+        """Populate recommendation folders in the background."""
         try:
-            # Wait 20 seconds for other providers (e.g., Spotify) to finish loading
-            # This prevents resolution failures due to no streaming providers being available yet
+            # Wait for other providers (e.g. Spotify) to finish loading before resolving items,
+            # otherwise resolution fails when no streaming providers are available yet.
             self.logger.info(
                 "Waiting 20 seconds for other providers to load before building recommendations..."
             )
@@ -283,8 +263,7 @@ class LastFMRecommendationsProvider(MusicProvider):
 
             self.logger.info("Starting background population of recommendations")
 
-            # Build folders incrementally - each category appears as soon as it's ready
-            # Get personalized recommendations based on user's library
+            # Build folders incrementally so each category appears as soon as it's ready.
             personalized_folders = (
                 await self.recommendations_manager._get_personalized_recommendations()
             )
@@ -294,13 +273,11 @@ class LastFMRecommendationsProvider(MusicProvider):
                     "Added %d personalized recommendation folder(s)", len(personalized_folders)
                 )
 
-            # Get global discovery recommendations
             global_folders = await self.recommendations_manager._get_global_recommendations()
             if global_folders:
                 self._recommendation_folders.extend(global_folders)
                 self.logger.info("Added %d global recommendation folder(s)", len(global_folders))
 
-            # Get genre-based recommendations (requires username)
             genre_folders = await self.recommendations_manager._get_genre_based_recommendations()
             if genre_folders:
                 self._recommendation_folders.extend(genre_folders)
@@ -308,7 +285,6 @@ class LastFMRecommendationsProvider(MusicProvider):
                     "Added %d genre-based recommendation folder(s)", len(genre_folders)
                 )
 
-            # Get geography-based recommendations
             geo_folders = await self.recommendations_manager._get_geo_based_recommendations()
             if geo_folders:
                 self._recommendation_folders.extend(geo_folders)
@@ -322,35 +298,28 @@ class LastFMRecommendationsProvider(MusicProvider):
                 len(self._recommendation_folders),
             )
 
-            # Save to persistent cache so recommendations survive provider reloads
             cache_key = f"recommendation_folders_{self.instance_id}"
             await self.mass.cache.set(
                 cache_key,
                 self._recommendation_folders,
-                expiration=60 * 60 * 24,  # 24 hours
+                expiration=60 * 60 * 24,
             )
         except MusicAssistantError as err:
-            # Expected MA errors (provider unavailable, database errors, etc.)
             self.logger.warning("Failed to populate recommendations: %s", err)
 
     def _schedule_refresh(self) -> None:
-        """Schedule periodic refresh of recommendations using MA's scheduler.
-
-        Uses the configured refresh interval (default: 6 hours). Set to 0 to disable.
-        """
+        """Schedule the next periodic refresh of recommendations."""
         refresh_interval_value = self.config.get_value("refresh_interval")
         if isinstance(refresh_interval_value, (int, float)):
             refresh_interval_hours = int(refresh_interval_value)
         else:
-            refresh_interval_hours = 6  # Default
+            refresh_interval_hours = 6
         if refresh_interval_hours <= 0:
             self.logger.info("Automatic refresh disabled (interval set to 0)")
             return
 
-        # Convert hours to seconds
         refresh_interval_seconds = float(refresh_interval_hours * 3600)
 
-        # Schedule next refresh using MA's call_later
         self.mass.call_later(
             refresh_interval_seconds,
             self._refresh_recommendations,
@@ -361,36 +330,19 @@ class LastFMRecommendationsProvider(MusicProvider):
         )
 
     async def _refresh_recommendations(self) -> None:
-        """Refresh recommendations (called by scheduler).
-
-        Re-populates recommendations and reschedules next refresh.
-        """
+        """Re-populate recommendations and reschedule the next refresh."""
         try:
             self.logger.info("Refreshing Last.fm recommendations (scheduled)")
             await self._populate_recommendations()
         except MusicAssistantError as err:
-            # Expected MA errors (provider unavailable, database errors, etc.)
             self.logger.warning("Failed to refresh recommendations: %s", err)
         finally:
-            # Reschedule next refresh
             self._schedule_refresh()
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's recommendations organized into folders.
+        """Return this provider's recommendation folders.
 
-        Returns the current state of recommendation folders. On first call (before
-        background population completes), this returns an empty list. Each subsequent
-        call returns progressively more populated folders as the background task
-        resolves items.
-
-        Returns up to 4 recommendation folders:
-        1. Discover Similar Artists (personalized, based on your listening)
-        2. Discover Similar Tracks (personalized, based on your listening)
-        3. Global Top Artists (worldwide chart from Last.fm)
-        4. Global Top Tracks (worldwide chart from Last.fm)
-
-        Personalized folders only appear if the user has listening history.
-        If the library is empty, only global charts will be shown.
+        On first call (before background population completes) this returns an empty list.
+        Subsequent calls return progressively more populated folders.
         """
-        # Return current state (empty on first call, populated later)
         return self._recommendation_folders

@@ -16,17 +16,10 @@ CACHE_CATEGORY_MBID_ISRC = 0  # Cache category for MBID->ISRC mappings
 
 
 class MBIDResolver:
-    """Resolves MusicBrainz IDs to ISRCs with extended caching.
+    """Resolves MusicBrainz recording IDs to ISRCs."""
 
-    This class queries the MusicBrainz provider to resolve MusicBrainz Recording IDs
-    (MBIDs) to International Standard Recording Codes (ISRCs). ISRCs are used by
-    streaming providers for accurate track matching.
-
-    A 90-day cache is implemented on top of MusicBrainz's own 30-day cache to
-    minimize API load, as ISRC mappings tend not to change.
-    """
-
-    CACHE_EXPIRATION = 86400 * 90  # 90 days
+    # 90 days: ISRC mappings rarely change, and this sits on top of MusicBrainz's own 30-day cache.
+    CACHE_EXPIRATION = 86400 * 90
 
     def __init__(self, provider: LastFMRecommendationsProvider) -> None:
         """Initialize MBID resolver.
@@ -40,16 +33,10 @@ class MBIDResolver:
     async def get_isrcs_for_recording(self, mbid: str) -> list[str]:
         """Get ISRCs for a recording MBID via MusicBrainz.
 
-        This method implements a 90-day cache on top of MusicBrainz's own caching
-        to minimize API calls to MusicBrainz. ISRC mappings tend not to change,
-        so once we've looked up an MBID->ISRC mapping, it should remain valid.
-
         :param mbid: MusicBrainz recording ID.
-        :return: List of ISRCs for the recording (may be empty if none found).
         """
         cache_key = f"recording_{mbid}"
 
-        # Check 90-day cache first
         cached = await self.mass.cache.get(
             key=cache_key,
             category=CACHE_CATEGORY_MBID_ISRC,
@@ -58,20 +45,17 @@ class MBIDResolver:
         if cached is not None:
             return cast("list[str]", cached.get("isrcs", []))
 
-        # Get MusicBrainz provider (built-in metadata provider)
         mb_provider = self.mass.get_provider("musicbrainz")
         if not mb_provider:
             msg = "MusicBrainz provider not available"
             raise ProviderUnavailableError(msg)
 
         try:
-            # Query MusicBrainz for recording details
-            # Note: MusicBrainz provider has its own 30-day cache and rate limiting
             recording = await cast("MusicbrainzProvider", mb_provider).get_recording_details(mbid)
 
             isrcs = recording.isrcs if recording and recording.isrcs else []
 
-            # Cache result for 90 days (even if empty to avoid repeated lookups)
+            # Cache empty results too, to avoid repeated failed lookups.
             await self.mass.cache.set(
                 key=cache_key,
                 data={"isrcs": isrcs},
@@ -84,7 +68,6 @@ class MBIDResolver:
         except (TimeoutError, ClientError, AttributeError, InvalidDataError) as err:
             self.logger.debug("Failed to get ISRCs for MBID %s: %s", mbid, type(err).__name__)
 
-            # Cache the failure (empty list) to avoid repeated failed lookups
             await self.mass.cache.set(
                 key=cache_key,
                 data={"isrcs": []},
