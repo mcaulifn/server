@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import (
@@ -190,7 +189,8 @@ async def get_config_entries(
             ),
             action=CONF_ACTION_CLEAR_CACHE,
             action_label="Clear Cache",
-            category="advanced",
+            category="Recommendations",
+            advanced=True,
             required=False,
         ),
     )
@@ -216,20 +216,19 @@ class LastFMRecommendationsProvider(MusicProvider):
         else:
             self._recommendation_folders = []
             self._recommendations_populated = False
-            self.mass.create_task(self._populate_recommendations())
+            # Delay the initial populate so other providers (e.g. Spotify) finish loading first;
+            # without this, resolution fails when no streaming providers are available yet.
+            self.mass.call_later(
+                20,
+                self._populate_recommendations,
+                task_id=f"lastfm_recommendations_initial_populate_{self.instance_id}",
+            )
 
         self._schedule_refresh()
 
     async def _populate_recommendations(self) -> None:
         """Populate recommendation folders in the background."""
         try:
-            # Wait for other providers (e.g. Spotify) to finish loading before resolving items,
-            # otherwise resolution fails when no streaming providers are available yet.
-            self.logger.debug(
-                "Waiting 20 seconds for other providers to load before building recommendations"
-            )
-            await asyncio.sleep(20)
-
             self.logger.info("Building Last.fm recommendations")
 
             # Build folders incrementally so each category appears as soon as it's ready.
