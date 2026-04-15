@@ -13,7 +13,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import RecommendationFolder
 
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.mbid_resolver import MBIDResolver
 from music_assistant.providers.lastfm_recommendations.recommendations import (
@@ -196,7 +196,7 @@ async def get_config_entries(
     )
 
 
-class LastFMRecommendationsProvider(MusicProvider):
+class LastFMRecommendationsProvider(MetadataProvider):
     """Last.fm Recommendations Provider for Music Assistant."""
 
     async def handle_async_init(self) -> None:

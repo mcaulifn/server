@@ -1,5 +1,5 @@
 {
-  "type": "music",
+  "type": "metadata",
   "domain": "lastfm_recommendations",
   "name": "Last.fm Recommendations",
   "description": "Get music recommendations from Last.fm based on your listening history",
