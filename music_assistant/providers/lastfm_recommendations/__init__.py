@@ -127,7 +127,7 @@ async def get_config_entries(
             label="Refresh Interval (hours)",
             default_value=6,
             description="How often to refresh recommendations (0 to disable automatic refresh)",
-            category="recommendations",
+            category="Recommendations",
             range=(0, 168),  # 0 to 1 week
         ),
         ConfigEntry(
@@ -139,7 +139,7 @@ async def get_config_entries(
                 "Provide 'Similar Artists' and 'Similar Tracks' rows based on your "
                 "listening history"
             ),
-            category="recommendations",
+            category="Recommendations",
         ),
         ConfigEntry(
             key="enable_global_charts",
@@ -150,7 +150,7 @@ async def get_config_entries(
                 "Provide 'Global Top Artists' and 'Global Top Tracks' rows from "
                 "Last.fm's worldwide charts"
             ),
-            category="recommendations",
+            category="Recommendations",
         ),
         ConfigEntry(
             key="enable_genre",
@@ -161,7 +161,7 @@ async def get_config_entries(
                 "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your "
                 "most played genre (requires username)"
             ),
-            category="recommendations",
+            category="Recommendations",
         ),
         ConfigEntry(
             key="geo_country",
@@ -170,7 +170,7 @@ async def get_config_entries(
             default_value="Argentina",
             description="Select country for geography-based top artists and tracks",
             options=[ConfigValueOption(country, country) for country in GEO_COUNTRIES],
-            category="recommendations",
+            category="Recommendations",
         ),
         ConfigEntry(
             key="enable_geo",
@@ -178,7 +178,7 @@ async def get_config_entries(
             label="Enable Geographic Charts",
             default_value=False,
             description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
-            category="recommendations",
+            category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
