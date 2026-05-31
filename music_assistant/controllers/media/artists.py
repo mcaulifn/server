@@ -234,7 +234,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         for prov in self.mass.metadata.providers:
             if not prov.supports_feature(ProviderFeature.ARTIST_TOPTRACKS):
                 continue
-            return await prov.get_artist_toptracks(ref_item)
+            with contextlib.suppress(NotImplementedError):
+                if result := await prov.get_artist_toptracks(ref_item):
+                    return result
         # try to get toptracks from streaming providers attached to the artist
         for provider_mapping in ref_item.provider_mappings:
             music_prov = self.mass.get_provider(
@@ -244,7 +246,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.ARTIST_TOPTRACKS not in music_prov.supported_features:
                 continue
-            return await music_prov.get_artist_toptracks(provider_mapping.item_id)
+            with contextlib.suppress(NotImplementedError):
+                if result := await music_prov.get_artist_toptracks(provider_mapping.item_id):
+                    return result
         # last resort: return all favorited tracks of this artist from the library
         return await self.mass.music.tracks.get_library_items_by_query(
             favorite=True,
@@ -283,7 +287,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         for prov in self.mass.metadata.providers:
             if not prov.supports_feature(ProviderFeature.ARTIST_TOPALBUMS):
                 continue
-            return await prov.get_artist_topalbums(ref_item)
+            with contextlib.suppress(NotImplementedError):
+                if result := await prov.get_artist_topalbums(ref_item):
+                    return result
         # try to get topalbums from streaming providers attached to the artist
         for provider_mapping in ref_item.provider_mappings:
             music_prov = self.mass.get_provider(
@@ -293,7 +299,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.ARTIST_TOPALBUMS not in music_prov.supported_features:
                 continue
-            return await music_prov.get_artist_topalbums(provider_mapping.item_id)
+            with contextlib.suppress(NotImplementedError):
+                if result := await music_prov.get_artist_topalbums(provider_mapping.item_id):
+                    return result
         # last resort: return all favorited albums of this artist from the library
         return await self.mass.music.albums.get_library_items_by_query(
             favorite=True,
