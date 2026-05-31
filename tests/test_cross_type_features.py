@@ -116,7 +116,7 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
 
 
 async def test_similar_artists_uses_music_provider_first() -> None:
-    """Similar artists should prefer a music provider mapped to the artist."""
+    """Similar artists for a library artist should prefer a mapped music provider."""
     mass = Mock()
     music_prov = Mock(spec=MusicProvider)
     music_prov.instance_id = "m_a"
@@ -139,16 +139,16 @@ async def test_similar_artists_uses_music_provider_first() -> None:
 
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
-    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
 
-    result = await controller.similar_artists("artist_123", "m_a", limit=5)
+    result = await controller.similar_artists("1", "library", limit=5)
 
     assert result == ["a1"]
     music_prov.get_similar_artists.assert_awaited_once_with(prov_artist_id="artist_123", limit=5)
 
 
 async def test_similar_artists_falls_back_to_metadata_provider() -> None:
-    """Falls through to metadata-tier provider when music provider doesn't support it."""
+    """Library artist falls through to a metadata provider when no music provider supports it."""
     mass = Mock()
     music_prov = Mock(spec=MusicProvider)
     music_prov.instance_id = "m_a"
@@ -177,12 +177,32 @@ async def test_similar_artists_falls_back_to_metadata_provider() -> None:
 
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
-    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
 
-    result = await controller.similar_artists("artist_123", "m_a", limit=5)
+    result = await controller.similar_artists("1", "library", limit=5)
 
     assert result == ["a2"]
     metadata_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
+
+
+async def test_similar_artists_provider_queries_named_provider() -> None:
+    """Similar artists for a provider artist should query only that provider."""
+    mass = Mock()
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.name = "Music Provider A"
+    music_prov.available = True
+    music_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    music_prov.supports_feature = lambda feature: feature in music_prov.supported_features
+    music_prov.get_similar_artists = AsyncMock(return_value=["a3"])
+    mass.get_provider.return_value = music_prov
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = mass
+
+    result = await controller.similar_artists("artist_123", "m_a", limit=5)
+
+    assert result == ["a3"]
+    music_prov.get_similar_artists.assert_awaited_once_with("artist_123", limit=5)
 
 
 async def test_browse_root_includes_non_music_providers() -> None:
