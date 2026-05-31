@@ -103,7 +103,7 @@ if TYPE_CHECKING:
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
 CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "top_tracks"
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
 CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
@@ -232,23 +232,15 @@ class PlayerQueuesController(CoreController):
                         value="library_tracks",
                     ),
                     ConfigValueOption(
-                        title="The artist's top/popular tracks",
-                        value="top_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="All tracks from all (streaming) providers (deduplicated)",
-                        value="all_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="Tracks from all albums in your library",
+                        title="Tracks from all albums that are in your library",
                         value="library_album_tracks",
                     ),
                     ConfigValueOption(
-                        title="Tracks from the artist's top/popular albums",
-                        value="top_album_tracks",
+                        title="The artist's top tracks (from streaming provider(s))",
+                        value="all_tracks",
                     ),
                     ConfigValueOption(
-                        title="Tracks from all albums across (streaming) providers (deduplicated)",
+                        title="Tracks from all the artist's albums (from streaming provider(s))",
                         value="all_album_tracks",
                     ),
                 ],
@@ -1957,32 +1949,18 @@ class PlayerQueuesController(CoreController):
             tracks = await self.mass.music.artists.tracks(artist.item_id, "library")
             random.shuffle(tracks)
             return tracks
-        if artist_items_conf == "top_tracks":
-            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
         if artist_items_conf == "all_tracks":
-            tracks = []
-            unique_ids: set[str] = set()
-            for mapping in artist.provider_mappings:
-                for track in await self.mass.music.artists.tracks(
-                    mapping.item_id, mapping.provider_instance
-                ):
-                    unique_id = f"{track.name}.{track.version}"
-                    if unique_id in unique_ids:
-                        continue
-                    unique_ids.add(unique_id)
-                    tracks.append(track)
+            # the artist's top tracks across the (streaming) providers
+            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
             random.shuffle(tracks)
             return tracks
         # album-based selection
         albums: list[Album] = []
         if artist_items_conf == "library_album_tracks":
             albums = await self.mass.music.artists.albums(artist.item_id, "library")
-        elif artist_items_conf == "top_album_tracks":
-            albums = await self.mass.music.artists.top_albums(artist.item_id, artist.provider)
         elif artist_items_conf == "all_album_tracks":
-            unique_ids = set()
+            # all (unique) albums across the (streaming) providers attached to the artist
+            unique_ids: set[str] = set()
             for mapping in artist.provider_mappings:
                 for album in await self.mass.music.artists.albums(
                     mapping.item_id, mapping.provider_instance

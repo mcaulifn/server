@@ -323,13 +323,19 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         if provider is None or not provider.available:
             return []  # guard against unavailable provider
-        if not provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
-            self.logger.warning(
-                "Provider %s does not support fetching all artist tracks.",
-                provider.name,
-            )
-            return []  # guard against unsupported feature
-        return await provider.get_artist_tracks(item_id)
+        if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
+            return await provider.get_artist_tracks(item_id)
+        # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
+        result: list[Track] = []
+        unique_ids: set[str] = set()
+        for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
+            for track in await self.mass.music.albums.tracks(album.item_id, album.provider):
+                unique_id = f"{track.name}.{track.version}"
+                if unique_id in unique_ids:
+                    continue
+                unique_ids.add(unique_id)
+                result.append(track)
+        return result
 
     async def get_library_artist_tracks(
         self,
