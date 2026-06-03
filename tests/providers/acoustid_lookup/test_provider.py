@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType, StreamType
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.acoustid_lookup.provider import (
@@ -17,6 +18,7 @@ from music_assistant.providers.acoustid_lookup.provider import (
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
+    NO_MATCH_RETRY_DAYS,
     AcoustidLookupProvider,
     _parse_response,
 )
@@ -292,6 +294,60 @@ async def test_start_analysis_gates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("track_mbid", "track_isrc", "expected_extra"),
+    [
+        pytest.param(
+            "0000-mbid", None, {"source": "existing_tags", "mbid": "0000-mbid"}, id="mbid_only"
+        ),
+        pytest.param(
+            None,
+            "USRC17607839",
+            {"source": "existing_tags", "isrc": "USRC17607839"},
+            id="isrc_only",
+        ),
+        pytest.param(
+            "0000-mbid",
+            "USRC17607839",
+            {"source": "existing_tags", "mbid": "0000-mbid", "isrc": "USRC17607839"},
+            id="mbid_and_isrc",
+        ),
+    ],
+)
+async def test_start_analysis_records_existing_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    track_mbid: str | None,
+    track_isrc: str | None,
+    expected_extra: dict[str, Any],
+) -> None:
+    """An already-identified track is recorded as analyzed (no fingerprinting, no retry)."""
+    provider = _make_provider()
+    track = MagicMock()
+    track.mbid = track_mbid
+    track.get_external_id.return_value = track_isrc
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    # session is declined (no streaming) but a result row is recorded
+    assert accepted is False
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    assert kwargs["aa_provider_domain"] == provider.domain
+    assert kwargs["item_id"] == "track-1"
+    analysis = kwargs["analysis"]
+    assert analysis.extra_data == expected_extra
+    # permanent result — never re-collected by the background scan
+    assert "retry_after" not in analysis.extra_data
+
+
+@pytest.mark.asyncio
 async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """A high-score match yields mbid + acoustid + candidates + release_groups."""
     provider = _make_provider()
@@ -355,7 +411,7 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A best-result score below the threshold yields no analysis."""
+    """A best-result score below the threshold yields a retryable no-match marker."""
     provider = _make_provider(min_score=0.85)
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
     track = MagicMock(mbid=None)
@@ -386,7 +442,15 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
         },
     )
 
-    assert await provider._finalize(session_id) is None
+    result = await provider._finalize(session_id)
+    assert result is not None
+    assert result.extra_data is not None
+    # marker records the failed lookup and schedules a retry rather than discarding
+    assert result.extra_data["acoustid_no_match"] is True
+    now = int(utc_timestamp())
+    assert now < result.extra_data["retry_after"] <= now + NO_MATCH_RETRY_DAYS * 86400 + 5
+    # no identifiers on the marker, so post_analysis stays a no-op
+    assert "mbid" not in result.extra_data
 
 
 # ---------------------------------------------------------------------------

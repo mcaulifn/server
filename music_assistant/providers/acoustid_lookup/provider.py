@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import parse_title_and_version
@@ -30,7 +31,7 @@ from music_assistant.providers.musicbrainz import MusicbrainzProvider
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
-    from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.media_items import AudioFormat, Track
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -43,6 +44,9 @@ CONF_WRITE_TAGS_BACK = "write_tags_back"
 CONF_ANALYSE_STREAMING = "analyse_streaming"
 
 DEFAULT_MIN_SCORE = 0.85
+# Days before a track that fingerprinted but found no match is retried. The AcoustID
+# database grows over time, so an unidentifiable track may match on a later attempt.
+NO_MATCH_RETRY_DAYS = 60
 MAX_FINGERPRINT_SECONDS = 120
 MAX_CANDIDATES = 5
 # Per-recording cap on stored release-groups; sized to fit popular tracks
@@ -132,13 +136,16 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         if track is None:
             self.logger.debug("Skipping %s — track is not in the library", session_id)
             return False
-        if track.mbid:
+        if track.mbid or track.get_external_id(ExternalID.ISRC):
+            # Already identified, so fingerprinting would be wasted work. Record the
+            # existing identifiers as a result so coverage counts the track and the scan
+            # does not revisit it.
+            await self._record_existing_identifiers(streamdetails, track)
             self.logger.debug(
-                "Skipping %s — track already has a MusicBrainz Recording Id", session_id
+                "Skipping %s — track already identified (MBID/ISRC present); "
+                "recorded existing identifiers",
+                session_id,
             )
-            return False
-        if track.get_external_id(ExternalID.ISRC):
-            self.logger.debug("Skipping %s — track already has an ISRC", session_id)
             return False
 
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
@@ -305,19 +312,22 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         if chosen_mbid is None:
             if data.expected_track_title:
                 self.logger.debug(
-                    "Discarding AcoustID result — no candidate matches track title %r",
+                    "No AcoustID match for %r — recording no-match marker, "
+                    "will retry after %d days",
                     data.expected_track_title,
+                    NO_MATCH_RETRY_DAYS,
                 )
-            return None
+            return self._no_match_marker()
 
         if chosen_score < min_score:
             self.logger.debug(
-                "Discarding AcoustID result — match score %.3f is below the configured "
-                "minimum of %.2f",
+                "No confident AcoustID match — best score %.3f is below the configured "
+                "minimum of %.2f; recording no-match marker, will retry after %d days",
                 chosen_score,
                 min_score,
+                NO_MATCH_RETRY_DAYS,
             )
-            return None
+            return self._no_match_marker()
 
         return AudioAnalysisData(
             extra_data={
@@ -327,6 +337,39 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 "candidates": candidates,
                 "release_groups": release_groups,
             }
+        )
+
+    def _no_match_marker(self) -> AudioAnalysisData:
+        """
+        Build a no-match marker result for a track that fingerprinted but found no match.
+
+        The marker carries a ``retry_after`` epoch so the background scan reattempts the
+        track once the cooldown elapses rather than re-fingerprinting it on every run.
+        """
+        retry_after = int(utc_timestamp()) + NO_MATCH_RETRY_DAYS * 86400
+        return AudioAnalysisData(extra_data={"acoustid_no_match": True, "retry_after": retry_after})
+
+    async def _record_existing_identifiers(
+        self, streamdetails: StreamDetails, track: Track
+    ) -> None:
+        """
+        Persist a track's existing MBID/ISRC as an analysis result, as if freshly looked up.
+
+        :param streamdetails: Stream details for the already-identified track.
+        :param track: Library track carrying the existing identifiers.
+        """
+        extra_data: dict[str, Any] = {"source": "existing_tags"}
+        if track.mbid:
+            extra_data["mbid"] = track.mbid
+        if isrc := track.get_external_id(ExternalID.ISRC):
+            extra_data["isrc"] = isrc
+        await self.mass.streams.audio_analysis.set_audio_analysis(
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            aa_provider_domain=self.domain,
+            analysis=AudioAnalysisData(extra_data=extra_data),
+            analysis_version=self.analysis_version,
+            media_type=streamdetails.media_type,
         )
 
     @use_cache(ACOUSTID_LOOKUP_CACHE_TTL)

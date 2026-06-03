@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -22,7 +23,9 @@ from music_assistant.controllers.streams.audio_analysis import (
     SONIC_ANALYSIS_DOMAIN,
     AudioAnalysisController,
     _merged_from_rows,
+    _retry_not_due_sql,
 )
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -372,6 +375,14 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     assert result[0]["item_id"] == "track-1"
     assert result[0]["missing_domains"] == ["loudness_analysis"]
 
+    # a row whose retry_after has fallen due no longer covers its track, so it is
+    # re-collected as a candidate; the cutoff is bound as :now
+    call = controller.mass.music.database.get_rows_from_query.await_args
+    assert call is not None
+    sql, params = call.args[:2]
+    assert "retry_after" in sql
+    assert isinstance(params["now"], int)
+
 
 @pytest.mark.asyncio
 async def test_run_background_scan_concurrency_semaphore(
@@ -686,7 +697,11 @@ async def test_get_audio_analysis_count_filters_by_domain_and_track_media_type()
     sql, params = db.get_count_from_query.await_args.args
     assert "aa_provider_domain = :aa_provider_domain" in sql
     assert "media_type = :media_type" in sql
-    assert params == {"aa_provider_domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
+    # rows due for retry are excluded so they reflect as pending, not analyzed
+    assert "retry_after" in sql
+    assert params["aa_provider_domain"] == "sonic_analysis"
+    assert params["media_type"] == MediaType.TRACK.value
+    assert isinstance(params["now"], int)
 
 
 @pytest.mark.asyncio
@@ -1052,7 +1067,33 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     sql, params = db.get_count_from_query.await_args.args
     assert "NOT EXISTS" in sql
     assert f"'{domain}'" in sql
-    assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
+    # a row due for retry no longer covers its track, so it re-enters the pending set
+    assert "retry_after" in sql
+    assert params["media_type"] == MediaType.TRACK.value
+    assert params["aa_domain"] == "sonic_analysis"
+    assert isinstance(params["now"], int)
+
+
+def test_retry_not_due_sql_reads_retry_after_from_extra_data() -> None:
+    """The retry predicate reads retry_after out of extra_data and honours the cutoff."""
+    now = int(utc_timestamp())
+    predicate = _retry_not_due_sql("analysis_data")
+    con = sqlite3.connect(":memory:")
+
+    def covers(analysis: AudioAnalysisData) -> bool:
+        row = con.execute(
+            f"SELECT {predicate} FROM (SELECT :data AS analysis_data)",
+            {"data": json_dumps(analysis.to_dict()), "now": now},
+        ).fetchone()
+        return bool(row[0])
+
+    # rows without a retry_after cover their track permanently
+    assert covers(AudioAnalysisData(loudness_integrated=-12.0))
+    assert covers(AudioAnalysisData(extra_data={"some_key": [0.1]}))
+    # a marker still inside its cooldown keeps covering the track
+    assert covers(AudioAnalysisData(extra_data={"retry_after": now + 3600}))
+    # a marker past its cooldown no longer covers it, so the track becomes a candidate
+    assert not covers(AudioAnalysisData(extra_data={"retry_after": now - 3600}))
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:

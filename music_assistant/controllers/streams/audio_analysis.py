@@ -27,7 +27,7 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
@@ -63,6 +63,22 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.streams.audio_buffer import AudioBuffer
     from music_assistant.controllers.streams.controller import StreamsController
+
+
+def _retry_not_due_sql(analysis_data_col: str) -> str:
+    """
+    Build the SQL predicate for whether a stored analysis row still covers its track.
+
+    Rows without a ``retry_after`` value cover their track permanently; rows carrying
+    one cover it only until that epoch (seconds) falls due. Callers must bind a ``:now``
+    parameter to the current epoch.
+
+    :param analysis_data_col: Qualified analysis_data column reference, e.g. ``aa.analysis_data``.
+    """
+    return (
+        f"(json_extract({analysis_data_col}, '$.extra_data.retry_after') IS NULL "
+        f"OR json_extract({analysis_data_col}, '$.extra_data.retry_after') > :now)"
+    )
 
 
 def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
@@ -474,15 +490,22 @@ class AudioAnalysisController:
         media_type: MediaType = MediaType.TRACK,
     ) -> int:
         """
-        Count audio_analysis rows for a given aa_provider_domain.
+        Count completed audio_analysis rows for a given aa_provider_domain.
+
+        Rows due for retry are excluded so they count as pending rather than analyzed.
 
         :param aa_provider_domain: Domain of the AA provider whose rows to count.
         :param media_type: The media type to count rows for.
         """
         return await self.mass.music.database.get_count_from_query(
             f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
+            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type "
+            f"  AND {_retry_not_due_sql('analysis_data')}",
+            {
+                "aa_provider_domain": aa_provider_domain,
+                "media_type": media_type.value,
+                "now": int(utc_timestamp()),
+            },
         )
 
     async def iter_audio_analysis_rows(
@@ -855,6 +878,7 @@ class AudioAnalysisController:
         )
         params: dict[str, Any] = {
             "media_type": MediaType.TRACK.value,
+            "now": int(utc_timestamp()),
             **{f"aa_{i}": d for i, d in enumerate(aa_provider_domains)},
         }
         query = (
@@ -870,7 +894,8 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND {_retry_not_due_sql('aa.analysis_data')}"
             f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
@@ -904,12 +929,17 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND {_retry_not_due_sql('aa.analysis_data')}"
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
             query,
-            {"media_type": MediaType.TRACK.value, "aa_domain": aa_domain},
+            {
+                "media_type": MediaType.TRACK.value,
+                "aa_domain": aa_domain,
+                "now": int(utc_timestamp()),
+            },
         )
 
     async def _start_analysis_on_providers(
