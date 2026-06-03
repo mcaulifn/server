@@ -47,6 +47,9 @@ DEFAULT_MIN_SCORE = 0.85
 # Days before a track that fingerprinted but found no match is retried. The AcoustID
 # database grows over time, so an unidentifiable track may match on a later attempt.
 NO_MATCH_RETRY_DAYS = 60
+# No-match results are stored at this version so they always read as stale and are
+# re-offered to the provider, which then gates the actual retry on NO_MATCH_RETRY_DAYS.
+NO_MATCH_ANALYSIS_VERSION = -1
 MAX_FINGERPRINT_SECONDS = 120
 MAX_CANDIDATES = 5
 # Per-recording cap on stored release-groups; sized to fit popular tracks
@@ -144,6 +147,13 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.debug(
                 "Skipping %s — track already identified (MBID/ISRC present); "
                 "recorded existing identifiers",
+                session_id,
+            )
+            return False
+
+        if await self._within_no_match_cooldown(streamdetails):
+            self.logger.debug(
+                "Skipping %s — earlier AcoustID lookup found no match; still within retry cooldown",
                 session_id,
             )
             return False
@@ -312,22 +322,24 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         if chosen_mbid is None:
             if data.expected_track_title:
                 self.logger.debug(
-                    "No AcoustID match for %r — recording no-match marker, "
+                    "No AcoustID match for %r — recording no-match result, "
                     "will retry after %d days",
                     data.expected_track_title,
                     NO_MATCH_RETRY_DAYS,
                 )
-            return self._no_match_marker()
+            await self._persist_no_match(session_id)
+            return None
 
         if chosen_score < min_score:
             self.logger.debug(
                 "No confident AcoustID match — best score %.3f is below the configured "
-                "minimum of %.2f; recording no-match marker, will retry after %d days",
+                "minimum of %.2f; recording no-match result, will retry after %d days",
                 chosen_score,
                 min_score,
                 NO_MATCH_RETRY_DAYS,
             )
-            return self._no_match_marker()
+            await self._persist_no_match(session_id)
+            return None
 
         return AudioAnalysisData(
             extra_data={
@@ -339,15 +351,42 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             }
         )
 
-    def _no_match_marker(self) -> AudioAnalysisData:
+    async def _within_no_match_cooldown(self, streamdetails: StreamDetails) -> bool:
         """
-        Build a no-match marker result for a track that fingerprinted but found no match.
+        Return whether a prior no-match result for this track is still within its retry cooldown.
 
-        The marker carries a ``retry_after`` epoch so the background scan reattempts the
-        track once the cooldown elapses rather than re-fingerprinting it on every run.
+        :param streamdetails: Stream details for the track being analysed.
         """
+        stored = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(self.domain,),
+        )
+        if not stored or not stored.extra_data:
+            return False
+        retry_after = stored.extra_data.get("retry_after")
+        return retry_after is not None and int(utc_timestamp()) < int(retry_after)
+
+    async def _persist_no_match(self, session_id: str) -> None:
+        """
+        Record that a track fingerprinted but found no match, scheduling a later retry.
+
+        :param session_id: Active analysis session ID.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        streamdetails = session.streamdetails
         retry_after = int(utc_timestamp()) + NO_MATCH_RETRY_DAYS * 86400
-        return AudioAnalysisData(extra_data={"acoustid_no_match": True, "retry_after": retry_after})
+        await self.mass.streams.audio_analysis.set_audio_analysis(
+            item_id=streamdetails.item_id,
+            provider_instance_id_or_domain=streamdetails.provider,
+            aa_provider_domain=self.domain,
+            analysis=AudioAnalysisData(extra_data={"retry_after": retry_after}),
+            analysis_version=NO_MATCH_ANALYSIS_VERSION,
+            media_type=streamdetails.media_type,
+        )
 
     async def _record_existing_identifiers(
         self, streamdetails: StreamDetails, track: Track

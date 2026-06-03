@@ -18,6 +18,7 @@ from music_assistant.providers.acoustid_lookup.provider import (
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
+    NO_MATCH_ANALYSIS_VERSION,
     NO_MATCH_RETRY_DAYS,
     AcoustidLookupProvider,
     _parse_response,
@@ -47,6 +48,7 @@ def _make_provider(
 
     mass.get_provider = MagicMock(side_effect=_default_get_provider)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     mass.music.tracks.set_identifiers = AsyncMock()
     mass.music.albums.set_release_group = AsyncMock()
@@ -348,6 +350,49 @@ async def test_start_analysis_records_existing_identifiers(
 
 
 @pytest.mark.asyncio
+async def test_start_analysis_skips_within_no_match_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track whose prior no-match result is still inside its cooldown is declined."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) + 3600})
+    )
+    fp = _FakeFingerprinter()
+    _install_fake_chromaprint(monkeypatch, fp)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is False
+    # declined before any fingerprinting work
+    assert fp.start_args is None
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_retries_after_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the cooldown has elapsed, the track is accepted for a fresh lookup."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) - 3600})
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is True
+
+
+@pytest.mark.asyncio
 async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """A high-score match yields mbid + acoustid + candidates + release_groups."""
     provider = _make_provider()
@@ -442,15 +487,18 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
         },
     )
 
-    result = await provider._finalize(session_id)
-    assert result is not None
-    assert result.extra_data is not None
-    # marker records the failed lookup and schedules a retry rather than discarding
-    assert result.extra_data["acoustid_no_match"] is True
+    # _finalize persists a no-match result itself and returns None so the base class
+    # does not overwrite it at the current analysis_version
+    assert await provider._finalize(session_id) is None
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    # stored below the current version so it is re-offered, and gated on a future retry_after
+    assert kwargs["analysis_version"] == NO_MATCH_ANALYSIS_VERSION
     now = int(utc_timestamp())
-    assert now < result.extra_data["retry_after"] <= now + NO_MATCH_RETRY_DAYS * 86400 + 5
-    # no identifiers on the marker, so post_analysis stays a no-op
-    assert "mbid" not in result.extra_data
+    retry_after = kwargs["analysis"].extra_data["retry_after"]
+    assert now < retry_after <= now + NO_MATCH_RETRY_DAYS * 86400 + 5
 
 
 # ---------------------------------------------------------------------------
