@@ -193,6 +193,10 @@ CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_PLUGIN_KEY_SPLITTER: Final[str] = "||plugin||"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
 CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+# Per-(music-)provider ownership + sharing (visibility model). `owner` stores the user_id of the
+# owning user (empty = house/unowned); `shared` (default True) controls whether non-owners see it.
+CONF_OWNER: Final[str] = "owner"
+CONF_SHARED: Final[str] = "shared"
 
 # Tri-state option VALUES for per-queue settings that can follow the global (queue controller)
 # default. "global" resolves to the queue-controller value (like the log_level "GLOBAL" pattern);
@@ -365,6 +369,17 @@ CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+
+# Sharing/ownership entries for (music) provider instances. The `owner` entry's options are
+# built at serialization time from the user list (see config controller), so only the static
+# `shared` toggle lives here. Kept off the default set so it is only surfaced for music providers.
+CONF_ENTRY_PROVIDER_SHARED = ConfigEntry(
+    key=CONF_SHARED,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
+    required=False,
+    category="sharing",
+)
 
 # some reusable player config entries
 

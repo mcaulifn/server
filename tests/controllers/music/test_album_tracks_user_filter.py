@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import Mock, patch
 
 import pytest
+from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.media_items import (
     Album,
@@ -67,18 +68,25 @@ async def _seed_album_with_mixed_provider_tracks(mass: MusicAssistant) -> Album:
     return db_album
 
 
-async def test_album_tracks_respect_user_provider_filter(mass: MusicAssistant) -> None:
+async def test_album_tracks_respect_user_provider_visibility(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A restricted user must not see album tracks that only exist on other providers."""
     db_album = await _seed_album_with_mixed_provider_tracks(mass)
 
-    # without a user provider filter, both tracks are returned
+    # without a restricted user, both tracks are returned
     all_tracks = await mass.music.albums.tracks(db_album.item_id, "library")
     assert {track.name for track in all_tracks} == {"Track Local", "Track Streaming"}
 
-    # a user restricted to prov_a must not see the prov_b-only track
+    # model a user who can see prov_a (unowned) but not prov_b (bob's, not shared) by
+    # scoping the ownership-derived visibility helpers the library query relies on
+    monkeypatch.setattr(mass.music, "user_sees_all_providers", lambda _user: False)
+    monkeypatch.setattr(
+        mass.music, "get_visible_provider_instance_ids", lambda _user: {"prov_a_inst"}
+    )
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["prov_a_inst"]),
+        return_value=Mock(user_id="alice", role=UserRole.USER),
     ):
         filtered_tracks = await mass.music.albums.tracks(db_album.item_id, "library")
         assert {track.name for track in filtered_tracks} == {"Track Local"}

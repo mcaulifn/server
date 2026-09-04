@@ -12,6 +12,7 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
     ProviderConfig,
     ProviderError,
@@ -36,6 +37,8 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_PROVIDER_SHARED,
+    CONF_OWNER,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -641,7 +644,39 @@ class ProviderConfigMixin:
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""
-        return self._wrap_provider_config_entries(provider, await provider.get_config_entries())
+        entries = self._wrap_provider_config_entries(provider, await provider.get_config_entries())
+        if provider.type == ProviderType.MUSIC:
+            # ownership/sharing controls the visibility of a music provider per user and is
+            # therefore only relevant (and only offered) for music provider instances.
+            entries.extend(await self._build_sharing_entries())
+        return entries
+
+    async def _build_sharing_entries(self) -> list[ConfigEntry]:
+        """
+        Build the ownership/sharing config entries for a music provider instance.
+
+        The ``owner`` dropdown is data-driven (its options are the current users plus an empty
+        "House" option), so it is built here in the async resolver where the user list is
+        reachable; the ``shared`` toggle is the static base entry.
+        """
+        user_options = [
+            ConfigValueOption(title=user.username, value=user.user_id)
+            for user in await self.mass.webserver.auth.list_users()
+        ]
+        owner_entry = ConfigEntry(
+            key=CONF_OWNER,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            category="sharing",
+            options=[
+                # the "house" (unowned) option: its value is empty, so it carries an
+                # explicit translation_key to key its title in the translations
+                ConfigValueOption(value="", translation_key="house"),
+                *user_options,
+            ],
+        )
+        return [CONF_ENTRY_PROVIDER_SHARED, owner_entry]
 
     def _wrap_provider_config_entries(
         self, provider: Provider, provider_entries: tuple[ConfigEntry, ...]

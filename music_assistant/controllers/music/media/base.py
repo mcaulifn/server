@@ -2075,39 +2075,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         provider: str | list[str] | None,
     ) -> list[str] | None:
-        """Ensure the provider filter respects the current user's provider filter."""
-        # Apply user provider filter if needed
+        """Ensure the provider filter respects the current user's provider visibility."""
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-        final_provider_filter: list[str] | None = None
-        if user_provider_filter:
-            plugin_provider_instances = {
-                prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
-            }
-            # User has a provider filter set
-            if provider:
-                # Explicit provider filter provided - validate against user's allowed providers
-                requested_providers = [provider] if isinstance(provider, str) else provider
-                # Only restrict access to music providers.
-                final_provider_filter = [
-                    p
-                    for p in requested_providers
-                    if p in user_provider_filter or p in plugin_provider_instances
-                ]
-                if not final_provider_filter:
-                    # No overlap - user requested providers they don't have access to
-                    raise InsufficientPermissions(
-                        "User does not have permission to access the requested provider(s)."
-                    )
-            else:
-                # No explicit filter - apply user music provider filter but keep plugin providers.
-                final_provider_filter = list(
-                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+        # admins/internal callers see everything: no implicit narrowing is required, so an
+        # explicit filter is used as-is and no filter stays "no filter".
+        if self.mass.music.user_sees_all_providers(user):
+            if provider is None:
+                return None
+            return [provider] if isinstance(provider, str) else provider
+        # some music providers are hidden from this user: build the set of providers they may
+        # reach (their visible music providers, plus plugin providers which are never owned).
+        visible_music = self.mass.music.get_visible_provider_instance_ids(user)
+        plugin_provider_instances = {
+            prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+        }
+        if provider:
+            # Explicit provider filter provided - validate against the user's visible providers.
+            requested_providers = [provider] if isinstance(provider, str) else provider
+            final_provider_filter = [
+                p
+                for p in requested_providers
+                if p in visible_music or p in plugin_provider_instances
+            ]
+            if not final_provider_filter:
+                # No overlap - user requested providers they don't have access to
+                raise InsufficientPermissions(
+                    "User does not have permission to access the requested provider(s)."
                 )
-        elif provider is not None:
-            # No user filter - use the provided filter as is
-            final_provider_filter = [provider] if isinstance(provider, str) else provider
-        return final_provider_filter
+            return final_provider_filter
+        # No explicit filter - restrict to the user's visible music providers but keep plugins.
+        return list(dict.fromkeys([*visible_music, *plugin_provider_instances]))
 
     @final
     def _resolve_reachable_via(self, reachable_via: list[str] | None) -> list[str] | None:
@@ -2162,20 +2159,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             raise MediaNotFoundError(msg)
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-        if not user_provider_filter:
+        if self.mass.music.user_sees_all_providers(user):
             mapping = next(iter(library_item.provider_mappings))
             return (mapping.provider_instance, mapping.item_id)
+        visible_music = self.mass.music.get_visible_provider_instance_ids(user)
 
-        # First prefer music provider mappings that are explicitly allowed for this user.
-        # prefer user provider filter if available
+        # First prefer music provider mappings that are visible to this user.
         for mapping in library_item.provider_mappings:
             provider = self.mass.get_provider(mapping.provider_instance)
             if provider and provider.type == ProviderType.MUSIC:
-                if mapping.provider_instance in user_provider_filter:
+                if mapping.provider_instance in visible_music:
                     return (mapping.provider_instance, mapping.item_id)
 
-        # If no allowed music mapping exists, fall back to plugin mappings.
+        # If no visible music mapping exists, fall back to plugin mappings.
         for mapping in library_item.provider_mappings:
             provider = self.mass.get_provider(mapping.provider_instance)
             if provider and provider.type == ProviderType.PLUGIN:
@@ -2183,7 +2179,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # As a final fallback, preserve previous behavior.
         for mapping in library_item.provider_mappings:
-            if mapping.provider_instance in user_provider_filter:
+            if mapping.provider_instance in visible_music:
                 return (mapping.provider_instance, mapping.item_id)
 
         # fallback to first mapping

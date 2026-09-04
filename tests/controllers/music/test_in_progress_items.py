@@ -120,22 +120,24 @@ async def test_in_progress_items_explicit_empty_providers_returns_no_items(
     assert result == []
 
 
-async def test_in_progress_items_combines_explicit_and_user_provider_filter(
+async def test_in_progress_items_combines_explicit_and_user_visibility(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A user's provider_filter narrows an explicit filter that would otherwise pass."""
+    """A user's provider visibility narrows an explicit filter that would otherwise pass."""
+    # a user who can only see local_1 is modelled by scoping the active provider instances,
+    # which the in_progress query derives its per-user provider filter from
     monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
     await _add_provider_mapping(mass, item_id=1, provider_instance="audible_1")
     await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
     await _add_in_progress_row(mass, "1", provider="library")
 
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a")):
         result = await mass.music.in_progress_items(limit=10, providers=["local_1"])
     assert {item.item_id for item in result} == {"1"}
 
-    # requesting a provider the user isn't permitted to use must not leak the item back
-    # in, even though the item does have a (permission-restricted) mapping to it.
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    # requesting a provider the user can't see must not leak the item back in,
+    # even though the item does have a (hidden) mapping to it.
+    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a")):
         result = await mass.music.in_progress_items(limit=10, providers=["audible_1"])
     assert result == []
 

@@ -71,7 +71,6 @@ from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
-    has_scope,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
@@ -517,22 +516,15 @@ class MusicAssistant:
         Return all loaded/running Providers (instances).
 
         Optionally filtered by ProviderType.
-        Note that this applies user filters for music providers (for non admin users).
+        Note that this applies per-user visibility for music providers (for non-admin users).
         """
         user = get_current_user()
-        user_provider_filter = (
-            user.provider_filter if user and not has_scope(user, Scope.ALL) else None
-        )
         return [
             x
             for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
-            # apply user provider filter
-            and (
-                not user_provider_filter
-                or x.instance_id in user_provider_filter
-                or x.type != ProviderType.MUSIC
-            )
+            # apply per-user music provider visibility (ownership/sharing)
+            and self.music.provider_visible_to_user(x, user)
         ]
 
     @api_command("logging/get", required_scope=Scope.SYSTEM_MANAGE)

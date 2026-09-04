@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import CONF_OWNER, CONF_SHARED, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 
@@ -44,16 +44,33 @@ def _make_prov(
     return prov
 
 
-@patch("music_assistant.controllers.music.controller.get_current_user")
-def test_apply_user_provider_filter_filters_music_providers_for_admin(
-    mock_get_user: Mock,
-) -> None:
-    """Admin's provider_filter must still narrow music providers (issue #5509)."""
-    mock_get_user.return_value = Mock(role=UserRole.ADMIN, provider_filter=["m_a"])
-    music_a = _make_prov("m_a", ProviderType.MUSIC)
-    music_b = _make_prov("m_b", ProviderType.MUSIC)
+def _ownership_controller(provider_config: dict[str, dict[str, object]]) -> MusicController:
+    """
+    Build a bare MusicController whose config serves per-provider owner/shared values.
+
+    :param provider_config: instance id -> {owner: ..., shared: ...}; a missing key falls back
+        to the getter default (mirroring an install that never stored the value).
+    """
+
+    def _get_raw(instance_id: str, key: str, default: object = None) -> object:
+        return provider_config.get(instance_id, {}).get(key, default)
 
     controller = MusicController.__new__(MusicController)
+    controller.mass = Mock()
+    controller.mass.config.get_raw_provider_config_value.side_effect = _get_raw
+    return controller
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+def test_apply_user_provider_filter_hides_private_owned_music_provider(
+    mock_get_user: Mock,
+) -> None:
+    """A non-owner does not see a music provider owned by someone else and not shared."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    controller = _ownership_controller({"m_b": {CONF_OWNER: "bob", CONF_SHARED: False}})
+    music_a = _make_prov("m_a", ProviderType.MUSIC)  # unowned -> visible
+    music_b = _make_prov("m_b", ProviderType.MUSIC)  # bob's private -> hidden
+
     result = controller._apply_user_provider_filter([music_a, music_b])
 
     assert [p.instance_id for p in result] == ["m_a"]
@@ -63,50 +80,63 @@ def test_apply_user_provider_filter_filters_music_providers_for_admin(
 def test_apply_user_provider_filter_passes_non_music_providers(
     mock_get_user: Mock,
 ) -> None:
-    """Metadata and plugin providers bypass the user's music provider filter."""
-    mock_get_user.return_value = Mock(role=UserRole.ADMIN, provider_filter=["m_a"])
-    music_a = _make_prov("m_a", ProviderType.MUSIC)
+    """Metadata and plugin providers bypass music-provider ownership visibility."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    controller = _ownership_controller({"m_a": {CONF_OWNER: "bob", CONF_SHARED: False}})
+    music_a = _make_prov("m_a", ProviderType.MUSIC)  # bob's private -> hidden
     metadata = _make_prov("meta_a", ProviderType.METADATA)
     plugin = _make_prov("plug_a", ProviderType.PLUGIN)
 
-    controller = MusicController.__new__(MusicController)
     result = controller._apply_user_provider_filter([music_a, metadata, plugin])
 
-    assert [p.instance_id for p in result] == ["m_a", "meta_a", "plug_a"]
+    assert [p.instance_id for p in result] == ["meta_a", "plug_a"]
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
-def test_apply_user_provider_filter_no_filter_returns_all(
+def test_apply_user_provider_filter_admin_sees_all(
     mock_get_user: Mock,
 ) -> None:
-    """An empty provider_filter passes every provider through."""
-    mock_get_user.return_value = Mock(role=UserRole.ADMIN, provider_filter=[])
+    """An administrator sees every provider regardless of ownership/sharing."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.ADMIN)
+    controller = _ownership_controller({"m_b": {CONF_OWNER: "bob", CONF_SHARED: False}})
     music_a = _make_prov("m_a", ProviderType.MUSIC)
     music_b = _make_prov("m_b", ProviderType.MUSIC)
 
-    controller = MusicController.__new__(MusicController)
     result = controller._apply_user_provider_filter([music_a, music_b])
 
     assert [p.instance_id for p in result] == ["m_a", "m_b"]
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
-async def test_browse_root_honors_admin_provider_filter(mock_get_user: Mock) -> None:
-    """Regression for issue #5509: browse must honor an admin's provider_filter."""
-    mock_get_user.return_value = Mock(role=UserRole.ADMIN, provider_filter=["m_a"])
-    mass = Mock()
+def test_apply_user_provider_filter_default_shared_returns_all(
+    mock_get_user: Mock,
+) -> None:
+    """A default-shared install (no owner/shared stored) passes every provider through."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    controller = _ownership_controller({})  # nothing stored
+    music_a = _make_prov("m_a", ProviderType.MUSIC)
+    music_b = _make_prov("m_b", ProviderType.MUSIC)
+
+    result = controller._apply_user_provider_filter([music_a, music_b])
+
+    assert [p.instance_id for p in result] == ["m_a", "m_b"]
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_browse_root_honors_provider_ownership(mock_get_user: Mock) -> None:
+    """Browse must hide a music provider owned by another user and not shared."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
     music_a = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_a.domain = "music_a"
     music_a.name = "Music A"
     music_b = _make_prov("m_b", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_b.domain = "music_b"
     music_b.name = "Music B"
-    mass.get_providers_supporting_feature.side_effect = lambda feature: (
+
+    controller = _ownership_controller({"m_b": {CONF_OWNER: "bob", CONF_SHARED: False}})
+    controller.mass.get_providers_supporting_feature.side_effect = lambda feature: (
         [music_a, music_b] if feature == ProviderFeature.BROWSE else []
     )
-
-    controller = MusicController.__new__(MusicController)
-    controller.mass = mass
 
     result = await controller.browse(path=None)
 
@@ -213,6 +243,19 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
         Genre(item_id="0", provider="library", name="Test Genre", provider_mappings=set())
     )
     await mass.music.database.commit()
+
+    # Register the two seeded providers as loaded music providers so ownership-based
+    # visibility (which only considers loaded providers) can be exercised. PROV_A is an
+    # unowned/shared house provider; PROV_B is owned by "bob" and not shared, so it is
+    # hidden from every other (non-admin) user.
+    for inst in (PROV_A, PROV_B):
+        prov = _make_prov(inst, ProviderType.MUSIC)
+        prov.domain = inst.removesuffix("_inst")
+        prov.available = True
+        prov.is_streaming_provider = False
+        mass._providers[inst] = prov
+    mass.config.set(f"providers/{PROV_B}/values/{CONF_OWNER}", "bob")
+    mass.config.set(f"providers/{PROV_B}/values/{CONF_SHARED}", False)
     return mass
 
 
@@ -235,7 +278,7 @@ async def test_library_count_matches_list_for_filtered_user(
     media_type: str,
     count_kwargs: dict[str, Any],
 ) -> None:
-    """A user's provider_filter must narrow library_count the same way it narrows the list."""
+    """Provider visibility must narrow library_count the same way it narrows the list."""
     controller = getattr(counted_mass.music, media_type)
     # library_items spells the favorite filter 'favorite', library_count 'favorite_only'
     list_kwargs = {
@@ -244,7 +287,9 @@ async def test_library_count_matches_list_for_filtered_user(
     }
     with patch(GET_CURRENT_USER, return_value=None):
         unfiltered_count = await controller.library_count(**count_kwargs)
-    with patch(GET_CURRENT_USER, return_value=Mock(provider_filter=[PROV_A])):
+    # alice is a plain user: she sees PROV_A (unowned) but not PROV_B (bob's, not shared)
+    alice = Mock(user_id="alice", role=UserRole.USER)
+    with patch(GET_CURRENT_USER, return_value=alice):
         filtered_count = await controller.library_count(**count_kwargs)
         # the limit must exceed the seeded row count, so the list is never truncated
         filtered_items = await controller.library_items(limit=500, **list_kwargs)
@@ -263,21 +308,23 @@ async def test_library_count_unchanged_without_user(counted_mass: MusicAssistant
             assert await controller.library_count() == total_rows
 
 
-async def test_library_count_unchanged_for_user_without_filter(
+async def test_library_count_unchanged_for_admin(
     counted_mass: MusicAssistant,
 ) -> None:
-    """A user without a provider_filter set sees the true library totals."""
+    """An administrator sees every provider, so the counts stay the true library totals."""
     total_rows = await counted_mass.music.database.get_count("tracks")
-    with patch(GET_CURRENT_USER, return_value=Mock(provider_filter=[])):
+    admin = Mock(user_id="admin", role=UserRole.ADMIN)
+    with patch(GET_CURRENT_USER, return_value=admin):
         assert await counted_mass.music.tracks.library_count() == total_rows
 
 
-async def test_genre_library_count_ignores_provider_filter(
+async def test_genre_library_count_ignores_provider_visibility(
     counted_mass: MusicAssistant,
 ) -> None:
-    """Genres have no provider mappings, so a provider_filter must not zero their count."""
+    """Genres have no provider mappings, so hidden providers must not zero their count."""
     with patch(GET_CURRENT_USER, return_value=None):
         unfiltered_count = await counted_mass.music.genres.library_count()
-    with patch(GET_CURRENT_USER, return_value=Mock(provider_filter=[PROV_A])):
+    alice = Mock(user_id="alice", role=UserRole.USER)
+    with patch(GET_CURRENT_USER, return_value=alice):
         assert await counted_mass.music.genres.library_count() == unfiltered_count
     assert unfiltered_count > 0

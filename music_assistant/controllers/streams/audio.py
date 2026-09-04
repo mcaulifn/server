@@ -646,10 +646,12 @@ class StreamsAudio:
                 (pq_data := mass.player_queues.queue_data_or_none(queue_item.queue_id))
                 and pq_data.userid
                 and (playback_user := await mass.webserver.auth.get_user(pq_data.userid))
-                and playback_user.provider_filter
+                and not mass.music.user_sees_all_providers(playback_user)
             ):
-                # handle steering into user preferred providerinstance
-                preferred_providers = playback_user.provider_filter
+                # steer playback towards the providers this user can see
+                preferred_providers = list(
+                    mass.music.get_visible_provider_instance_ids(playback_user)
+                )
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
@@ -3646,9 +3648,9 @@ class StreamsAudio:
             (pq_data := self.mass.player_queues.queue_data_or_none(queue_item.queue_id))
             and pq_data.userid
             and (playback_user := await self.mass.webserver.auth.get_user(pq_data.userid))
-            and playback_user.provider_filter
+            and not self.mass.music.user_sees_all_providers(playback_user)
         ):
-            preferred = set(playback_user.provider_filter)
+            preferred = self.mass.music.get_visible_provider_instance_ids(playback_user)
             eligible.sort(key=lambda provider: provider.instance_id not in preferred)
         # one instance per domain: a found mapping widens to sibling instances anyway
         candidates: list[MusicProvider] = []

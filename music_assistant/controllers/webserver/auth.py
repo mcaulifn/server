@@ -1249,7 +1249,14 @@ class AuthenticationManager:
         player_filter: list[str] | None,
         provider_filter: list[str] | None,
     ) -> User:
-        """Update user player and provider filters (helper method)."""
+        """
+        Update user player and provider filters (helper method).
+
+        DEPRECATED: ``provider_filter`` no longer drives music-provider visibility. Visibility
+        is now derived from each (music) provider instance's ``owner``/``shared`` config (see
+        the ownership/sharing model in the music controller). The field is still persisted to
+        avoid churn/migrations but is otherwise unused; ``player_filter`` is unaffected.
+        """
         updates = {}
         if player_filter is not None:
             updates["player_filter"] = json_dumps(player_filter)

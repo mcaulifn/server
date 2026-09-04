@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
 
+from music_assistant.constants import CONF_OWNER, CONF_SHARED
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider
@@ -180,8 +182,11 @@ async def test_items_unknown_provider_returns_empty(mass: MusicAssistant) -> Non
 async def test_items_restricted_provider_returns_empty(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A user's provider filter blocks fetching items from a restricted music provider."""
-    mock_get_user.return_value = Mock(provider_filter=["allowed_instance"])
+    """Provider visibility blocks fetching items from a music provider hidden from the user."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    # restricted_instance is owned by bob and not shared, so alice cannot see it
+    mass.config.set(f"providers/restricted_instance/values/{CONF_OWNER}", "bob")
+    mass.config.set(f"providers/restricted_instance/values/{CONF_SHARED}", False)
     provider = _build(_RowsProvider, instance_id="restricted_instance")
     provider.get_recommendation_items = AsyncMock()  # type: ignore[method-assign]
     monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
@@ -194,8 +199,11 @@ async def test_items_restricted_provider_returns_empty(
 async def test_rows_restricted_provider_returns_no_rows(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A user's provider filter excludes a restricted music provider's rows from the listing."""
-    mock_get_user.return_value = Mock(provider_filter=["allowed_instance"])
+    """Provider visibility excludes a hidden music provider's rows from the listing."""
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    # restricted_instance is owned by bob and not shared, so alice cannot see it
+    mass.config.set(f"providers/restricted_instance/values/{CONF_OWNER}", "bob")
+    mass.config.set(f"providers/restricted_instance/values/{CONF_SHARED}", False)
     restricted = _build(_RowsProvider, instance_id="restricted_instance")
     monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted])
     folders = await mass.music.recommendations.get_recommendations()

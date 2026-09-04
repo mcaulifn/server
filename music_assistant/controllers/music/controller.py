@@ -11,7 +11,7 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import (
     ConfigActionResult,
@@ -57,6 +57,8 @@ from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_OWNER,
+    CONF_SHARED,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_PLAYLOG,
@@ -363,7 +365,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Return all loaded/running MusicProviders (instances).
 
-        Note that this applies user provider filters (for all user types).
+        Note that this applies per-user provider visibility (for all user types).
         """
         return cast(
             "list[MusicProvider]",
@@ -372,6 +374,59 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 for x in self._apply_user_provider_filter(self.mass.providers)
                 if x.type == ProviderType.MUSIC
             ],
+        )
+
+    def provider_visible_to_user(self, provider: ProviderInstanceType, user: User | None) -> bool:
+        """
+        Return whether a (music) provider instance is visible to the given user.
+
+        Visibility only applies to music providers (all other provider types are always
+        visible). A music provider is visible when: the caller is an administrator or an
+        internal/unauthenticated call (``user is None``); the provider is unowned (no owner
+        set, i.e. a house provider); the provider is ``shared``; or the user is its owner.
+
+        :param provider: The provider instance to evaluate.
+        :param user: The user to evaluate visibility for, or None for internal calls.
+        """
+        if provider.type != ProviderType.MUSIC:
+            return True
+        if user is None or user.role == UserRole.ADMIN:
+            return True
+        owner = self.mass.config.get_raw_provider_config_value(
+            provider.instance_id, CONF_OWNER, None
+        )
+        if not owner:
+            # unowned / house provider -> visible to everyone
+            return True
+        if owner == user.user_id:
+            # the owner always sees their own provider, regardless of the shared flag
+            return True
+        # shared defaults to True, so behavior is unchanged until an owner unticks it
+        return bool(
+            self.mass.config.get_raw_provider_config_value(provider.instance_id, CONF_SHARED, True)
+        )
+
+    def get_visible_provider_instance_ids(self, user: User | None) -> set[str]:
+        """Return the instance ids of all loaded music providers visible to the given user."""
+        return {
+            p.instance_id
+            for p in self.mass.providers
+            if p.type == ProviderType.MUSIC and self.provider_visible_to_user(p, user)
+        }
+
+    def user_sees_all_providers(self, user: User | None) -> bool:
+        """
+        Return whether every loaded music provider is visible to the given user.
+
+        Used as a fast-path to decide whether an ownership-scoped filter needs to be
+        applied to a library query at all.
+        """
+        if user is None or user.role == UserRole.ADMIN:
+            return True
+        return all(
+            self.provider_visible_to_user(p, user)
+            for p in self.mass.providers
+            if p.type == ProviderType.MUSIC
         )
 
     @api_command("music/sync", required_scope=Scope.LIBRARY_MANAGE)
@@ -906,9 +961,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         params: dict[str, Any] = {}
         user = get_current_user()
         # a library row only needs resolving through its provider mappings when a filter
-        # (explicit or user-scoped) is actually active; otherwise every library row is
-        # kept, matching this method's unfiltered behavior.
-        if providers is not None or (user and user.provider_filter):
+        # (explicit or ownership-scoped) is actually active; otherwise every library row is
+        # kept, matching this method's unfiltered behavior. `available_providers` is already
+        # scoped to the user's visible providers (via the `providers` property), so the extra
+        # mapping resolution is only needed when some providers are actually hidden.
+        if providers is not None or not self.user_sees_all_providers(user):
             requested_clause = ""
             direct_requested_clause = ""
             if providers is not None:
@@ -1065,9 +1122,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "AND m.available = 1 "
         )
         if not all_users and (user := get_current_user()):
+            # available_providers is already scoped to the providers visible to this user
+            # (via the ownership-aware `providers` property), so it doubles as the per-user filter.
             filter_for_str = available_providers_str
-            if user.provider_filter:
-                filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
             query += (
                 f"AND m.provider_instance IN {filter_for_str} "
                 f"AND m.provider_instance IN {available_providers_str}"
@@ -1680,14 +1737,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
                 if music_prov.type != ProviderType.MUSIC:
+                    continue
+                # only sync resume state to providers this user is allowed to see
+                if not self.provider_visible_to_user(music_prov, user):
                     continue
                 music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
@@ -1796,14 +1850,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
         for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
                 if music_prov.type != ProviderType.MUSIC:
+                    continue
+                # only sync resume state to providers this user is allowed to see
+                if not self.provider_visible_to_user(music_prov, user):
                     continue
                 music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
@@ -1934,10 +1985,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         provider_instances = {x.provider_instance for x in media_item.provider_mappings}
-        if user and user.provider_filter:
-            # only if the user has provider filters configured
-            # otherwise we allow all providers
-            preferred_provider_instances = provider_instances.intersection(user.provider_filter)
+        if user is not None and user.role != UserRole.ADMIN:
+            # scope the preferred providers to the ones this user can see; admins and
+            # internal calls (no user) may use every provider the item maps to
+            visible_instances = self.get_visible_provider_instance_ids(user)
+            preferred_provider_instances = provider_instances.intersection(visible_instances)
         else:
             preferred_provider_instances = provider_instances
 
@@ -2099,17 +2151,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         This will return a set of provider instance ids but will only return
         a single instance_id per streaming provider domain.
 
-        Applies user provider filters (for non-admin users).
+        Applies the current user's provider visibility (for non-admin users).
         """
         processed_domains: set[str] = set()
-        # Get user provider filter if set
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         result: list[str] = []
+        # `self.providers` already scopes to the providers visible to the current user
         for provider in self.providers:
             if provider.is_streaming_provider and provider.domain in processed_domains:
-                continue
-            if user_provider_filter and provider.instance_id not in user_provider_filter:
                 continue
             result.append(provider.instance_id)
             processed_domains.add(provider.domain)
@@ -2569,16 +2617,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self,
         providers: Iterable[ProviderInstanceType],
     ) -> list[ProviderInstanceType]:
-        """Filter providers by the current user's music provider filter."""
+        """Filter (music) providers down to the ones visible to the current session user."""
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
-        if not user_provider_filter:
+        if user is None or user.role == UserRole.ADMIN:
+            # unauthenticated/internal calls and administrators see everything
             return list(providers)
-        return [
-            p
-            for p in providers
-            if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
-        ]
+        return [p for p in providers if self.provider_visible_to_user(p, user)]
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -3156,17 +3200,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def _get_user_for_provider(
         self, provider_mappings_or_instance_id: Iterable[ProviderMapping] | str
     ) -> User | None:
-        """Try to get the MA User based on provider mappings and provider filter."""
-        all_users = await self.mass.webserver.auth.list_users()
-        for mapping_or_instance_id in provider_mappings_or_instance_id:
-            for user in all_users:
-                if not user.provider_filter:
-                    continue
-                if isinstance(mapping_or_instance_id, str):
-                    if provider_mappings_or_instance_id in user.provider_filter:
-                        return user
-                elif mapping_or_instance_id.provider_instance in user.provider_filter:
-                    return user
+        """
+        Return the MA user that owns one of the given providers, if any.
+
+        Used to attribute a play to a user when there is no active session user (e.g. a
+        background provider sync reporting progress). Resolves a provider's configured owner
+        (see the ownership/sharing visibility model) to an actual user.
+
+        :param provider_mappings_or_instance_id: The provider mappings (or a single provider
+            instance id) to resolve an owning user for.
+        """
+        if isinstance(provider_mappings_or_instance_id, str):
+            instance_ids: list[str] = [provider_mappings_or_instance_id]
+        else:
+            instance_ids = [m.provider_instance for m in provider_mappings_or_instance_id]
+        owner_ids = {
+            owner
+            for instance_id in instance_ids
+            if (
+                owner := self.mass.config.get_raw_provider_config_value(
+                    instance_id, CONF_OWNER, None
+                )
+            )
+        }
+        if not owner_ids:
+            return None
+        for user in await self.mass.webserver.auth.list_users():
+            if user.user_id in owner_ids:
+                return user
         return None
 
     async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
@@ -3418,18 +3479,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def _handle_verify_item_uri(self, uri: str) -> bool:
         user = get_current_user()
+        # admins and internal/unauthenticated callers can access everything
+        restricted = user is not None and user.role != UserRole.ADMIN
 
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         except InvalidProviderURI, InvalidProviderID:
             return False
 
-        # fast return for a provider uri which is not part of a user with a provider filter
+        # fast return for a direct provider uri that points at a provider hidden from this user
         if (
-            provider_instance_id_or_domain != "library"
-            and user
-            and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
+            restricted
+            and provider_instance_id_or_domain != "library"
+            and not self._provider_ref_visible_to_user(provider_instance_id_or_domain, user)
         ):
             return False
 
@@ -3445,18 +3507,30 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # NotImplementedError: the uri has a valid format, but specifies an unknown media type
             return False
 
-        # non library item handling for users with no filter, or no user at all
+        # non library item, an unrestricted user (or none at all), or a browse folder: allow
         if (
             provider_instance_id_or_domain != "library"
-            or not user
-            or (user and not user.provider_filter)
+            or not restricted
             or isinstance(item, BrowseFolder)
         ):
             return True
 
-        # library item handling for users with provider filter
+        # library item: visible when it maps to at least one provider the user can see
+        visible_ids = self.get_visible_provider_instance_ids(user)
         for provider_mapping in item.provider_mappings:
-            if provider_mapping.provider_instance in user.provider_filter:
+            if provider_mapping.provider_instance in visible_ids:
                 return True
 
+        return False
+
+    def _provider_ref_visible_to_user(
+        self, provider_instance_id_or_domain: str, user: User | None
+    ) -> bool:
+        """Return whether any music provider matching the id-or-domain is visible to the user."""
+        for provider in self.mass.providers:
+            if provider.type != ProviderType.MUSIC:
+                continue
+            if provider_instance_id_or_domain in (provider.instance_id, provider.domain):
+                if self.provider_visible_to_user(provider, user):
+                    return True
         return False

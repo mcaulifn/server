@@ -1069,14 +1069,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ", ".join([x.name for x in source_items]),
         )
 
-        # Get user's preferred provider instances for steering provider selection
+        # Get the user's visible provider instances for steering provider selection
         preferred_provider_instances: list[str] | None = None
-        if (
-            queue_data.userid
-            and (playback_user := await self.mass.webserver.auth.get_user(queue_data.userid))
-            and playback_user.provider_filter
+        if queue_data.userid and (
+            playback_user := await self.mass.webserver.auth.get_user(queue_data.userid)
         ):
-            preferred_provider_instances = playback_user.provider_filter
+            if not self.mass.music.user_sees_all_providers(playback_user):
+                preferred_provider_instances = list(
+                    self.mass.music.get_visible_provider_instance_ids(playback_user)
+                )
 
         # Some providers have very deterministic similar-track algorithms for a single track
         # seed. When continuing from a single track on a refill, seed from the play history
