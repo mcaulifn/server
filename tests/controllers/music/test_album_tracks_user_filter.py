@@ -86,7 +86,7 @@ async def test_album_tracks_respect_user_provider_visibility(
     )
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice", role=UserRole.USER),
+        return_value=Mock(user_id="alice", role=UserRole.USER, provider_filter=[]),
     ):
         filtered_tracks = await mass.music.albums.tracks(db_album.item_id, "library")
         assert {track.name for track in filtered_tracks} == {"Track Local"}

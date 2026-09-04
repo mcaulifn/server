@@ -27,8 +27,10 @@ def _make_prov(instance_id: str, prov_type: ProviderType = ProviderType.MUSIC) -
     return prov
 
 
-def _make_user(user_id: str, role: UserRole = UserRole.USER) -> Mock:
-    return Mock(user_id=user_id, role=role)
+def _make_user(
+    user_id: str, role: UserRole = UserRole.USER, provider_filter: list[str] | None = None
+) -> Mock:
+    return Mock(user_id=user_id, role=role, provider_filter=provider_filter or [])
 
 
 def _controller(provider_config: dict[str, dict[str, object]]) -> MusicController:

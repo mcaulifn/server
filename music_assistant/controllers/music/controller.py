@@ -11,7 +11,7 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import (
     ConfigActionResult,
@@ -381,30 +381,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Return whether a (music) provider instance is visible to the given user.
 
         Visibility only applies to music providers (all other provider types are always
-        visible). A music provider is visible when: the caller is an administrator or an
-        internal/unauthenticated call (``user is None``); the provider is unowned (no owner
-        set, i.e. a house provider); the provider is ``shared``; or the user is its owner.
+        visible), and is the combination of two independent restrictions: the user's own
+        ``provider_filter`` (when set) and the provider's ownership/sharing config. Both must
+        allow the provider. Ownership can therefore only ever narrow what a user already sees,
+        never widen it, which keeps an existing ``provider_filter`` working unchanged.
 
         :param provider: The provider instance to evaluate.
         :param user: The user to evaluate visibility for, or None for internal calls.
         """
         if provider.type != ProviderType.MUSIC:
             return True
-        if user is None or user.role == UserRole.ADMIN:
+        if user is None or has_scope(user, Scope.ALL):
+            # unauthenticated/internal calls and administrators see everything
             return True
-        owner = self.mass.config.get_raw_provider_config_value(
-            provider.instance_id, CONF_OWNER, None
-        )
-        if not owner:
-            # unowned / house provider -> visible to everyone
-            return True
-        if owner == user.user_id:
-            # the owner always sees their own provider, regardless of the shared flag
-            return True
-        # shared defaults to True, so behavior is unchanged until an owner unticks it
-        return bool(
-            self.mass.config.get_raw_provider_config_value(provider.instance_id, CONF_SHARED, True)
-        )
+        if user.provider_filter and provider.instance_id not in user.provider_filter:
+            return False
+        return self._ownership_visible_to_user(provider, user)
 
     def get_visible_provider_instance_ids(self, user: User | None) -> set[str]:
         """Return the instance ids of all loaded music providers visible to the given user."""
@@ -421,7 +413,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Used as a fast-path to decide whether an ownership-scoped filter needs to be
         applied to a library query at all.
         """
-        if user is None or user.role == UserRole.ADMIN:
+        if user is None or has_scope(user, Scope.ALL):
             return True
         return all(
             self.provider_visible_to_user(p, user)
@@ -1985,7 +1977,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         provider_instances = {x.provider_instance for x in media_item.provider_mappings}
-        if user is not None and user.role != UserRole.ADMIN:
+        if user is not None and not has_scope(user, Scope.ALL):
             # scope the preferred providers to the ones this user can see; admins and
             # internal calls (no user) may use every provider the item maps to
             visible_instances = self.get_visible_provider_instance_ids(user)
@@ -2613,13 +2605,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
 
+    def _ownership_visible_to_user(self, provider: ProviderInstanceType, user: User) -> bool:
+        """
+        Return whether the ownership/sharing config of a music provider allows the given user.
+
+        :param provider: The music provider instance to evaluate.
+        :param user: The (non-administrator) user to evaluate visibility for.
+        """
+        owner = self.mass.config.get_raw_provider_config_value(
+            provider.instance_id, CONF_OWNER, None
+        )
+        if not owner:
+            # unowned / house provider -> visible to everyone
+            return True
+        if owner == user.user_id:
+            # the owner always sees their own provider, regardless of the shared flag
+            return True
+        # shared defaults to True, so behavior is unchanged until an owner unticks it
+        return bool(
+            self.mass.config.get_raw_provider_config_value(provider.instance_id, CONF_SHARED, True)
+        )
+
     def _apply_user_provider_filter(
         self,
         providers: Iterable[ProviderInstanceType],
     ) -> list[ProviderInstanceType]:
         """Filter (music) providers down to the ones visible to the current session user."""
         user = get_current_user()
-        if user is None or user.role == UserRole.ADMIN:
+        if user is None or has_scope(user, Scope.ALL):
             # unauthenticated/internal calls and administrators see everything
             return list(providers)
         return [p for p in providers if self.provider_visible_to_user(p, user)]
@@ -3480,7 +3493,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def _handle_verify_item_uri(self, uri: str) -> bool:
         user = get_current_user()
         # admins and internal/unauthenticated callers can access everything
-        restricted = user is not None and user.role != UserRole.ADMIN
+        restricted = user is not None and not has_scope(user, Scope.ALL)
 
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)

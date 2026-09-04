@@ -66,7 +66,7 @@ def test_apply_user_provider_filter_hides_private_owned_music_provider(
     mock_get_user: Mock,
 ) -> None:
     """A non-owner does not see a music provider owned by someone else and not shared."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     controller = _ownership_controller({"m_b": {CONF_OWNER: "bob", CONF_SHARED: False}})
     music_a = _make_prov("m_a", ProviderType.MUSIC)  # unowned -> visible
     music_b = _make_prov("m_b", ProviderType.MUSIC)  # bob's private -> hidden
@@ -81,7 +81,7 @@ def test_apply_user_provider_filter_passes_non_music_providers(
     mock_get_user: Mock,
 ) -> None:
     """Metadata and plugin providers bypass music-provider ownership visibility."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     controller = _ownership_controller({"m_a": {CONF_OWNER: "bob", CONF_SHARED: False}})
     music_a = _make_prov("m_a", ProviderType.MUSIC)  # bob's private -> hidden
     metadata = _make_prov("meta_a", ProviderType.METADATA)
@@ -97,7 +97,7 @@ def test_apply_user_provider_filter_admin_sees_all(
     mock_get_user: Mock,
 ) -> None:
     """An administrator sees every provider regardless of ownership/sharing."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.ADMIN)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.ADMIN, provider_filter=[])
     controller = _ownership_controller({"m_b": {CONF_OWNER: "bob", CONF_SHARED: False}})
     music_a = _make_prov("m_a", ProviderType.MUSIC)
     music_b = _make_prov("m_b", ProviderType.MUSIC)
@@ -112,7 +112,7 @@ def test_apply_user_provider_filter_default_shared_returns_all(
     mock_get_user: Mock,
 ) -> None:
     """A default-shared install (no owner/shared stored) passes every provider through."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     controller = _ownership_controller({})  # nothing stored
     music_a = _make_prov("m_a", ProviderType.MUSIC)
     music_b = _make_prov("m_b", ProviderType.MUSIC)
@@ -125,7 +125,7 @@ def test_apply_user_provider_filter_default_shared_returns_all(
 @patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_browse_root_honors_provider_ownership(mock_get_user: Mock) -> None:
     """Browse must hide a music provider owned by another user and not shared."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     music_a = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_a.domain = "music_a"
     music_a.name = "Music A"
@@ -288,7 +288,7 @@ async def test_library_count_matches_list_for_filtered_user(
     with patch(GET_CURRENT_USER, return_value=None):
         unfiltered_count = await controller.library_count(**count_kwargs)
     # alice is a plain user: she sees PROV_A (unowned) but not PROV_B (bob's, not shared)
-    alice = Mock(user_id="alice", role=UserRole.USER)
+    alice = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     with patch(GET_CURRENT_USER, return_value=alice):
         filtered_count = await controller.library_count(**count_kwargs)
         # the limit must exceed the seeded row count, so the list is never truncated
@@ -313,7 +313,7 @@ async def test_library_count_unchanged_for_admin(
 ) -> None:
     """An administrator sees every provider, so the counts stay the true library totals."""
     total_rows = await counted_mass.music.database.get_count("tracks")
-    admin = Mock(user_id="admin", role=UserRole.ADMIN)
+    admin = Mock(user_id="admin", role=UserRole.ADMIN, provider_filter=[])
     with patch(GET_CURRENT_USER, return_value=admin):
         assert await counted_mass.music.tracks.library_count() == total_rows
 
@@ -324,7 +324,7 @@ async def test_genre_library_count_ignores_provider_visibility(
     """Genres have no provider mappings, so hidden providers must not zero their count."""
     with patch(GET_CURRENT_USER, return_value=None):
         unfiltered_count = await counted_mass.music.genres.library_count()
-    alice = Mock(user_id="alice", role=UserRole.USER)
+    alice = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     with patch(GET_CURRENT_USER, return_value=alice):
         assert await counted_mass.music.genres.library_count() == unfiltered_count
     assert unfiltered_count > 0

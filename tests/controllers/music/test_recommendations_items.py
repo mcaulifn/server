@@ -183,7 +183,7 @@ async def test_items_restricted_provider_returns_empty(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Provider visibility blocks fetching items from a music provider hidden from the user."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     # restricted_instance is owned by bob and not shared, so alice cannot see it
     mass.config.set(f"providers/restricted_instance/values/{CONF_OWNER}", "bob")
     mass.config.set(f"providers/restricted_instance/values/{CONF_SHARED}", False)
@@ -200,7 +200,7 @@ async def test_rows_restricted_provider_returns_no_rows(
     mock_get_user: Mock, mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Provider visibility excludes a hidden music provider's rows from the listing."""
-    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER)
+    mock_get_user.return_value = Mock(user_id="alice", role=UserRole.USER, provider_filter=[])
     # restricted_instance is owned by bob and not shared, so alice cannot see it
     mass.config.set(f"providers/restricted_instance/values/{CONF_OWNER}", "bob")
     mass.config.set(f"providers/restricted_instance/values/{CONF_SHARED}", False)

@@ -953,7 +953,7 @@ def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice"),
+        return_value=Mock(user_id="alice", provider_filter=[]),
     ):
         result = ctrl._ensure_provider_filter(None)
 
@@ -976,7 +976,7 @@ def test_ensure_provider_filter_rejects_unallowed_music_provider() -> None:
     with (
         patch(
             "music_assistant.controllers.music.media.base.get_current_user",
-            return_value=Mock(user_id="alice"),
+            return_value=Mock(user_id="alice", provider_filter=[]),
         ),
         pytest.raises(InsufficientPermissions),
     ):
@@ -996,7 +996,7 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice"),
+        return_value=Mock(user_id="alice", provider_filter=[]),
     ):
         result = ctrl._ensure_provider_filter("smart_playlist_1")
 
@@ -1017,7 +1017,7 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice"),
+        return_value=Mock(user_id="alice", provider_filter=[]),
     ):
         result = ctrl._ensure_provider_filter(None)
 
@@ -1057,7 +1057,7 @@ def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice"),
+        return_value=Mock(user_id="alice", provider_filter=[]),
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 
@@ -1095,7 +1095,7 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(user_id="alice"),
+        return_value=Mock(user_id="alice", provider_filter=[]),
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 

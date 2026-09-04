@@ -131,13 +131,13 @@ async def test_in_progress_items_combines_explicit_and_user_visibility(
     await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
     await _add_in_progress_row(mass, "1", provider="library")
 
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a")):
+    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=[])):
         result = await mass.music.in_progress_items(limit=10, providers=["local_1"])
     assert {item.item_id for item in result} == {"1"}
 
     # requesting a provider the user can't see must not leak the item back in,
     # even though the item does have a (hidden) mapping to it.
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a")):
+    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=[])):
         result = await mass.music.in_progress_items(limit=10, providers=["audible_1"])
     assert result == []
 
