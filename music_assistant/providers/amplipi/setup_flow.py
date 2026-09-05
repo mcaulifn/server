@@ -9,15 +9,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
+from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.amplipi.constants import (
-    CONF_HOST,
-    DEFAULT_HOST,
-    MDNS_NAME,
-    MDNS_TYPE,
-)
+from music_assistant.providers.amplipi.constants import CONF_HOST, DEFAULT_HOST, MDNS_TYPE
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -27,6 +23,8 @@ LOGGER = logging.getLogger(__name__)
 # how long the form waits for an AmpliPi to answer on mDNS before falling back to the
 # default hostname; kept short so setup does not appear to hang on a network without one.
 _DISCOVERY_TIMEOUT = 3.0
+# how often the mDNS cache is re-checked while waiting for the browser to fill it
+_DISCOVERY_POLL_INTERVAL = 0.25
 
 _ENTRIES = (
     ConfigEntry(
@@ -66,11 +64,9 @@ async def _discover_host(session: SetupSession) -> str:
     everywhere Music Assistant runs). The value is only a prefill: the user can always
     point the provider at another controller.
     """
-    discovery_info = await session.mass.discovery.async_find_mdns_service(
-        MDNS_TYPE, MDNS_NAME, timeout=_DISCOVERY_TIMEOUT
-    )
+    discovery_info = await _find_amplipi(session)
     if discovery_info is None:
-        LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_NAME, DEFAULT_HOST)
+        LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_TYPE, DEFAULT_HOST)
         return DEFAULT_HOST
     hostname = (discovery_info.server or "").rstrip(".")
     if hostname and await _is_resolvable(hostname):
@@ -83,6 +79,29 @@ async def _discover_host(session: SetupSession) -> str:
         address or DEFAULT_HOST,
     )
     return address or DEFAULT_HOST
+
+
+async def _find_amplipi(session: SetupSession) -> AsyncServiceInfo | None:
+    """
+    Return the mDNS record of an AmpliPi on the network, or None if none answers.
+
+    The instance name carries the controller's MAC, so any instance of the AmpliPi
+    service type is accepted rather than one fixed name. The provider manifest subscribes
+    to that type, so the shared browser is normally already filling the cache; the poll
+    covers a cache that is still cold when setup is opened.
+    """
+    zeroconf = session.mass.discovery.aiozc.zeroconf
+    deadline = asyncio.get_running_loop().time() + _DISCOVERY_TIMEOUT
+    while True:
+        for mdns_name in set(zeroconf.cache.cache):
+            if not mdns_name.endswith(MDNS_TYPE) or mdns_name == MDNS_TYPE:
+                continue
+            info = AsyncServiceInfo(MDNS_TYPE, mdns_name)
+            if await info.async_request(zeroconf, 3000):
+                return info
+        if asyncio.get_running_loop().time() >= deadline:
+            return None
+        await asyncio.sleep(_DISCOVERY_POLL_INTERVAL)
 
 
 async def _is_resolvable(hostname: str) -> bool:

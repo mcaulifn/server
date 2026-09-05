@@ -19,6 +19,7 @@ from music_assistant.providers.amplipi.constants import (
     DEFAULT_HOST,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
+    MDNS_TYPE,
 )
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
@@ -46,21 +47,41 @@ def _provider() -> AmpliPiPlayerProvider:
 
 
 def _discovery_info(
-    server: str = "amplipi.local.", address: str | None = "192.168.1.50"
+    server: str = "amplipi.local.", address: str | None = "192.168.11.148"
 ) -> SimpleNamespace:
-    """Build a lightweight stand-in for the mDNS service info of an AmpliPi."""
+    """Build a lightweight stand-in for the resolved mDNS record of an AmpliPi."""
     addresses = [IPv4Address(address)] if address else []
     return SimpleNamespace(
         server=server,
+        async_request=AsyncMock(return_value=True),
         ip_addresses_by_version=lambda version: addresses if version == IPVersion.V4Only else [],
     )
 
 
-def _setup_session(discovery_info: SimpleNamespace | None) -> MagicMock:
-    """Build a setup session whose mDNS lookup yields the given service info."""
+def _setup_session(cache: dict[str, None] | None = None) -> MagicMock:
+    """
+    Build a setup session exposing the given mDNS cache.
+
+    Mirrors what the shared browser leaves in the zeroconf cache: an instance name keyed
+    by the controller's MAC under the AmpliPi service type.
+    """
     session = MagicMock()
-    session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=discovery_info)
+    session.mass.discovery.aiozc.zeroconf.cache.cache = cache if cache is not None else {}
     return session
+
+
+def _cache_with_amplipi() -> dict[str, None]:
+    """Return an mDNS cache holding one AmpliPi instance."""
+    return {f"amplipi-b8:27:eb:8f:8d:85.{MDNS_TYPE}": None}
+
+
+def _patch_resolution(
+    monkeypatch: pytest.MonkeyPatch, discovery_info: SimpleNamespace | None
+) -> None:
+    """Make resolving any cached mDNS name yield the given record (or fail to resolve)."""
+    if discovery_info is None:
+        discovery_info = SimpleNamespace(async_request=AsyncMock(return_value=False))
+    monkeypatch.setattr(setup_flow, "AsyncServiceInfo", lambda *_args: discovery_info)
 
 
 class TestHandleAsyncInit:
@@ -435,25 +456,52 @@ class TestHostDiscovery:
 
     async def test_prefers_the_advertised_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The hostname outlives a DHCP lease, so it wins over the advertised address."""
+        _patch_resolution(monkeypatch, _discovery_info())
         monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=True))
-        assert await setup_flow._discover_host(_setup_session(_discovery_info())) == "amplipi.local"
+        session = _setup_session(_cache_with_amplipi())
+        assert await setup_flow._discover_host(session) == "amplipi.local"
 
     async def test_falls_back_to_the_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A host that cannot resolve .local names is better served by the address."""
+        _patch_resolution(monkeypatch, _discovery_info())
         monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
-        session = _setup_session(_discovery_info())
-        assert await setup_flow._discover_host(session) == "192.168.1.50"
+        session = _setup_session(_cache_with_amplipi())
+        assert await setup_flow._discover_host(session) == "192.168.11.148"
 
-    async def test_falls_back_to_the_default_without_discovery(self) -> None:
+    async def test_falls_back_to_the_default_without_discovery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """With no AmpliPi on the network the user still gets the conventional hostname."""
-        assert await setup_flow._discover_host(_setup_session(None)) == DEFAULT_HOST
+        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
+        assert await setup_flow._discover_host(_setup_session()) == DEFAULT_HOST
+
+    async def test_ignores_other_services_in_the_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cache is shared with every browsed type, so non-AmpliPi names must be skipped."""
+        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
+        resolve = MagicMock()
+        monkeypatch.setattr(setup_flow, "AsyncServiceInfo", resolve)
+        session = _setup_session({"nas01._http._tcp.local.": None, "_amplipi._tcp.local.": None})
+        assert await setup_flow._discover_host(session) == DEFAULT_HOST
+        resolve.assert_not_called()
+
+    async def test_falls_back_to_the_default_when_the_record_will_not_resolve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cached name that no longer answers must not stall or crash the form."""
+        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
+        _patch_resolution(monkeypatch, None)
+        session = _setup_session(_cache_with_amplipi())
+        assert await setup_flow._discover_host(session) == DEFAULT_HOST
 
     async def test_falls_back_to_the_default_without_a_usable_address(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A service advertising neither a resolvable name nor an address is no help."""
+        """A record advertising neither a resolvable name nor an address is no help."""
+        _patch_resolution(monkeypatch, _discovery_info(server="", address=None))
         monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
-        session = _setup_session(_discovery_info(server="", address=None))
+        session = _setup_session(_cache_with_amplipi())
         assert await setup_flow._discover_host(session) == DEFAULT_HOST
 
     async def test_unresolvable_name_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
