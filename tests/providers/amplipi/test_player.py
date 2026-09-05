@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
+from pyamplipi.error import AmpliPiError
 
 from music_assistant.providers.amplipi.constants import SOURCE_DISCONNECTED, ZONE_OFF
 from music_assistant.providers.amplipi.player import AmpliPiZonePlayer
@@ -533,6 +534,83 @@ class TestPlayStop:
         player._source_id = 0
         mock_provider.api.get_source = AsyncMock(return_value=SimpleNamespace(input="stream=x"))
         assert await player._active_stream_id() is None
+
+
+class TestPauseMute:
+    """Test the mute applied while paused/stopped to silence the amplifier hum."""
+
+    async def test_pause_mutes_zone_and_members(self, mock_provider: MagicMock) -> None:
+        """pause() must mute this zone and every grouped member."""
+        player = _make_player(mock_provider, 0)
+        player._attr_group_members = [player.player_id, "amplipi_test_zone_1"]
+        await player.pause()
+        multi = mock_provider.api.set_zones.await_args.args[0]
+        assert multi.zones == [0, 1]
+        assert multi.update.mute is True
+
+    async def test_stop_mutes_zone(self, mock_provider: MagicMock) -> None:
+        """A stopped zone stays connected to a silent source, so it is muted too."""
+        player = _make_player(mock_provider, 0)
+        await player.stop()
+        multi = mock_provider.api.set_zones.await_args.args[0]
+        assert multi.update.mute is True
+
+    async def test_play_unmutes_after_pause(self, mock_provider: MagicMock) -> None:
+        """play() must lift the mute that pause() applied."""
+        player = _make_player(mock_provider, 0)
+        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=False)
+        await player.pause()
+        await player.play()
+        multi = mock_provider.api.set_zones.await_args.args[0]
+        assert multi.update.mute is False
+
+    async def test_play_media_leaves_no_pending_mute(self, mock_provider: MagicMock) -> None:
+        """play_media attaches the zones unmuted, so no unmute may be left outstanding."""
+        player = _make_player(mock_provider, 0)
+        await player.pause()
+        await player.play_media(MagicMock())
+        assert player._auto_muted is False
+
+    async def test_user_mute_survives_a_pause_cycle(self, mock_provider: MagicMock) -> None:
+        """A zone the user muted is left alone: nothing to mute, and nothing to lift."""
+        player = _make_player(mock_provider, 0)
+        player._attr_volume_muted = True
+        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=False)
+        await player.pause()
+        mock_provider.api.set_zones.assert_not_awaited()
+        await player.play()
+        mock_provider.api.set_zones.assert_not_awaited()
+        assert player.volume_muted is True
+
+    async def test_muting_while_paused_takes_ownership(self, mock_provider: MagicMock) -> None:
+        """Muting during a pause is the user's intent, so resuming must not undo it."""
+        player = _make_player(mock_provider, 0)
+        await player.pause()
+        await player.volume_mute(True)
+        mock_provider.api.set_zones.reset_mock()
+        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=False)
+        await player.play()
+        mock_provider.api.set_zones.assert_not_awaited()
+
+    def test_paused_zone_does_not_report_as_muted(self, mock_provider: MagicMock) -> None:
+        """The workaround's mute must stay hidden from the reported state."""
+        player = _make_player(mock_provider, 0)
+        player._auto_muted = True
+        muted_zone = _zone(0, source_id=0)
+        muted_zone.mute = True
+        player.update_from_status(
+            _status(zones=[muted_zone], sources=[_source(0, input_str="stream=42")])
+        )
+        assert player.volume_muted is False
+
+    async def test_pause_survives_an_amplipi_failure(self, mock_provider: MagicMock) -> None:
+        """A controller that refuses the mute must not break the pause itself."""
+        player = _make_player(mock_provider, 0)
+        mock_provider.api.set_zones = AsyncMock(side_effect=AmpliPiError("boom"))
+        await player.pause()
+        assert player.playback_state == PlaybackState.PAUSED
+        # the mute never landed, so resuming must not try to lift one
+        assert player._auto_muted is False
 
 
 class TestAvailability:
