@@ -25,9 +25,6 @@ LOGGER = logging.getLogger(__name__)
 _DISCOVERY_TIMEOUT = 3.0
 # how often the mDNS cache is re-checked while waiting for the browser to fill it
 _DISCOVERY_POLL_INTERVAL = 0.25
-# how long a name lookup may take before the name counts as unresolvable; the form is not
-# published until this returns, so a stalled resolver must not be waited on indefinitely.
-_RESOLVE_TIMEOUT = 2.0
 
 _ENTRIES = (
     ConfigEntry(
@@ -61,27 +58,24 @@ async def _discover_host(session: SetupSession) -> str:
     """
     Return the address to prefill the host field with.
 
-    Prefers the hostname an AmpliPi found on the network advertises, as its IP address is
-    usually a DHCP lease that stops working once it is reassigned. The IP is used only
-    when this host cannot resolve that name (mDNS resolution is not available
-    everywhere Music Assistant runs). The value is only a prefill: the user can always
-    point the provider at another controller.
+    Prefers the hostname the discovered controller advertises, as its IP address is
+    usually a DHCP lease that stops working once it is reassigned. The provider reaches
+    the controller over ``mass.http_session``, whose resolver answers .local names from
+    mDNS, so the hostname holds even where the system resolver knows nothing about them.
+    The value is only a prefill: the user can always point the provider at another
+    controller.
     """
     discovery_info = await _find_amplipi(session)
     if discovery_info is None:
         LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_TYPE, DEFAULT_HOST)
         return DEFAULT_HOST
-    hostname = (discovery_info.server or "").rstrip(".")
-    if hostname and await _is_resolvable(hostname):
+    if hostname := (discovery_info.server or "").rstrip("."):
         LOGGER.debug("Discovered AmpliPi at %s", hostname)
         return hostname
+    # a record without a hostname still carries addresses to fall back on
     address = get_primary_ip_address_from_zeroconf(discovery_info)
     host = _as_url_host(address) if address else DEFAULT_HOST
-    LOGGER.debug(
-        "Discovered AmpliPi advertising %s, which does not resolve here; offering %s",
-        hostname or "no hostname",
-        host,
-    )
+    LOGGER.debug("Discovered AmpliPi advertising no hostname, offering %s", host)
     return host
 
 
@@ -124,14 +118,3 @@ def _as_url_host(address: str) -> str:
     :param address: The address discovered over mDNS.
     """
     return f"[{address}]" if ":" in address else address
-
-
-async def _is_resolvable(hostname: str) -> bool:
-    """Return whether the host running Music Assistant can resolve the given hostname."""
-    try:
-        await asyncio.wait_for(
-            asyncio.get_running_loop().getaddrinfo(hostname, None), timeout=_RESOLVE_TIMEOUT
-        )
-    except OSError, TimeoutError:
-        return False
-    return True

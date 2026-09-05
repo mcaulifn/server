@@ -458,18 +458,15 @@ class TestHostDiscovery:
     """Test the mDNS lookup that prefills the host field in the setup flow."""
 
     async def test_prefers_the_advertised_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The hostname outlives a DHCP lease, so it wins over the advertised address."""
+        """
+        The hostname outlives a DHCP lease, so it wins over the advertised address.
+
+        It is preferred even where the system resolver cannot resolve it: the provider
+        connects over mass.http_session, whose resolver answers .local from mDNS.
+        """
         _patch_resolution(monkeypatch, _discovery_info())
-        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=True))
         session = _setup_session(_cache_with_amplipi())
         assert await setup_flow._discover_host(session) == "amplipi.local"
-
-    async def test_falls_back_to_the_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A host that cannot resolve .local names is better served by the address."""
-        _patch_resolution(monkeypatch, _discovery_info())
-        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
-        session = _setup_session(_cache_with_amplipi())
-        assert await setup_flow._discover_host(session) == "192.168.11.148"
 
     async def test_falls_back_to_the_default_without_discovery(
         self, monkeypatch: pytest.MonkeyPatch
@@ -501,22 +498,24 @@ class TestHostDiscovery:
     async def test_falls_back_to_the_default_without_a_usable_address(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A record advertising neither a resolvable name nor an address is no help."""
+        """A record advertising neither a hostname nor an address is no help."""
         _patch_resolution(monkeypatch, _discovery_info(server="", address=None))
-        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
         session = _setup_session(_cache_with_amplipi())
         assert await setup_flow._discover_host(session) == DEFAULT_HOST
 
-    async def test_unresolvable_name_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A name the resolver rejects must be reported as unresolvable, not raise."""
-        loop = asyncio.get_running_loop()
-        monkeypatch.setattr(loop, "getaddrinfo", AsyncMock(side_effect=OSError("no such host")))
-        assert await setup_flow._is_resolvable("amplipi.local") is False
+    async def test_falls_back_to_the_address_without_a_hostname(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a record carrying no hostname at all falls through to its address."""
+        _patch_resolution(monkeypatch, _discovery_info(server=""))
+        session = _setup_session(_cache_with_amplipi())
+        assert await setup_flow._discover_host(session) == "192.168.11.148"
 
     async def test_ipv6_address_is_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The provider builds "http://<host>/api", which needs a bracketed IPv6 literal."""
-        _patch_resolution(monkeypatch, _discovery_info(address=None, v6_address="fd00::1"))
-        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
+        _patch_resolution(
+            monkeypatch, _discovery_info(server="", address=None, v6_address="fd00::1")
+        )
         session = _setup_session(_cache_with_amplipi())
         assert await setup_flow._discover_host(session) == "[fd00::1]"
 
@@ -542,18 +541,6 @@ class TestHostDiscovery:
         # each attempt is handed what is left of the budget, and it keeps shrinking
         assert budgets == sorted(budgets, reverse=True)
         assert max(budgets) <= 0.05 * 1000
-
-    async def test_a_stalled_resolver_is_not_waited_on(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The form is published after this, so a hung resolver must not hold setup open."""
-        monkeypatch.setattr(setup_flow, "_RESOLVE_TIMEOUT", 0.01)
-
-        async def _never(*_args: object, **_kwargs: object) -> None:
-            await asyncio.sleep(10)
-
-        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _never)
-        assert await setup_flow._is_resolvable("amplipi.local") is False
 
 
 class TestSetupFlowPrefill:
