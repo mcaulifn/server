@@ -77,6 +77,20 @@ def mock_provider() -> MagicMock:
         )
     )
 
+    # map player_id -> zone player, so grouped members resolve to real player objects
+    # (the auto-mute bookkeeping is per member player, not just the group leader)
+    zone_players: dict[str, AmpliPiZonePlayer] = {}
+
+    def _player_for(player_id: str) -> AmpliPiZonePlayer | None:
+        zone_id = provider.zone_id_for(player_id)
+        if zone_id is None:
+            return None
+        if player_id not in zone_players:
+            zone_players[player_id] = _make_player(provider, zone_id)
+        return zone_players[player_id]
+
+    provider.player_for = MagicMock(side_effect=_player_for)
+
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/stream.flac")

@@ -201,6 +201,13 @@ class AmpliPiPlayerProvider(PlayerProvider):
                 return zone_id
         return None
 
+    def player_for(self, player_id: str) -> AmpliPiZonePlayer | None:
+        """Return the zone player for the given Music Assistant player_id."""
+        for player in self._players.values():
+            if player.player_id == player_id:
+                return player
+        return None
+
     async def _poll_loop(self) -> None:
         """Poll the AmpliPi controller for state updates and propagate them to the players."""
         while True:

@@ -341,6 +341,16 @@ class AmpliPiZonePlayer(Player):
                 zone_ids.append(zone_id)
         return zone_ids
 
+    def _member_players(self) -> list[AmpliPiZonePlayer]:
+        """Return this player plus any grouped member players."""
+        players = [self]
+        for player_id in self._attr_group_members:
+            if player_id == self.player_id:
+                continue
+            if (player := self._prov.player_for(player_id)) is not None:
+                players.append(player)
+        return players
+
     def _member_zone_ids(self) -> list[int]:
         """Return this zone's id plus the zone ids of any grouped members."""
         zone_ids = [self._zone_id]
@@ -387,22 +397,32 @@ class AmpliPiZonePlayer(Player):
         which the amplifier renders as an audible hum. Muting the zones while nothing is
         playing silences that. Only a mute we applied ourselves is ever lifted again, so a
         mute the user set stays untouched, and the mute we apply is hidden from the
-        reported state (see update_from_status). An AmpliPi failure here is not worth
+        reported state (see update_from_status). The flag is tracked per member player
+        rather than on the group leader alone, so every player hides (and later lifts)
+        exactly its own zone's workaround mute. An AmpliPi failure here is not worth
         aborting the transport command over.
 
         :param muted: True to mute for pause/stop, False to restore on resume.
         """
         if muted:
-            # nothing to do if we already muted, or if the zone is muted by the user
-            if self._auto_muted or self._attr_volume_muted:
-                return
-        elif not self._auto_muted:
+            # leave alone what we already muted, and what the user muted themselves
+            targets = [
+                player
+                for player in self._member_players()
+                if not (player._auto_muted or player._attr_volume_muted)
+            ]
+        else:
+            targets = [player for player in self._member_players() if player._auto_muted]
+        if not targets:
             return
         with suppress(*AMPLIPI_API_ERRORS):
             await self._prov.api.set_zones(
-                MultiZoneUpdate(zones=self._member_zone_ids(), update=ZoneUpdate(mute=muted))
+                MultiZoneUpdate(
+                    zones=[player.zone_id for player in targets], update=ZoneUpdate(mute=muted)
+                )
             )
-            self._auto_muted = muted
+            for player in targets:
+                player._auto_muted = muted
 
     def _dissolve_group(self) -> None:
         """Clear this player's group and refresh any former members."""
