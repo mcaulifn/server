@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 # before pausing and, on resume, re-issues play_media; in flow mode that re-resolves the
 # stream URL at the resume offset, so playback continues from where it was paused. This
 # relies on the player self-clocking its position (AmpliPi reports none) - see play_media.
+# The zones are also muted while paused/stopped, as the amplifier hums on a connected but
+# silent source - see _set_auto_mute.
 PLAYER_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.PAUSE,
@@ -55,6 +57,9 @@ class AmpliPiZonePlayer(Player):
         super().__init__(provider, f"{provider.instance_id}_zone_{zone_id}")
         self._zone_id = zone_id
         self._source_id: int | None = None
+        # set while WE muted the zone to silence it during pause/stop, so that resuming
+        # only unmutes what we muted and never clears a mute the user set themselves.
+        self._auto_muted = False
         # default the player name to the zone's AmpliPi name (e.g. "Living Room"); this is
         # only a default - a name set on the player in Music Assistant always takes priority
         zone = next((z for z in provider.status.zones if z.id == zone_id), None)
@@ -87,6 +92,8 @@ class AmpliPiZonePlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         await self._prov.api.set_zone(self._zone_id, ZoneUpdate(mute=muted))
         self._attr_volume_muted = muted
+        # the user now owns the mute state: drop our claim on it either way
+        self._auto_muted = False
         self.update_state()
 
     async def power(self, powered: bool) -> None:
@@ -99,6 +106,7 @@ class AmpliPiZonePlayer(Player):
             )
             self._attr_powered = True
             self._attr_volume_muted = False
+            self._auto_muted = False
         else:
             # turn off this zone and any zones grouped to it
             await self._prov.api.set_zones(
@@ -107,6 +115,7 @@ class AmpliPiZonePlayer(Player):
                 )
             )
             self._attr_powered = False
+            self._auto_muted = False
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None
             self._source_id = None
@@ -122,6 +131,7 @@ class AmpliPiZonePlayer(Player):
         if self._attr_playback_state == PlaybackState.PAUSED and queue is not None and queue.active:
             await self.mass.player_queues.resume(self.player_id)
             return
+        await self._set_auto_mute(False)
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.play_stream(stream_id)
         self._attr_playback_state = PlaybackState.PLAYING
@@ -132,6 +142,7 @@ class AmpliPiZonePlayer(Player):
         self.mark_stop_called()
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.stop_stream(stream_id)
+        await self._set_auto_mute(True)
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -142,6 +153,7 @@ class AmpliPiZonePlayer(Player):
         # from it (see the PLAYER_FEATURES note and the play/resume delegation above).
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.stop_stream(stream_id)
+        await self._set_auto_mute(True)
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -176,7 +188,9 @@ class AmpliPiZonePlayer(Player):
         self._attr_active_source = self.player_id
         self._attr_current_media = media
         self._attr_powered = True
+        # _attach_only_zones attached the zones unmuted
         self._attr_volume_muted = False
+        self._auto_muted = False
         self._attr_playback_state = PlaybackState.PLAYING
         # AmpliPi reports no playback position, so we self-clock: start at 0 for this (flow)
         # stream and let corrected_elapsed_time advance with wall time while PLAYING. Music
@@ -215,6 +229,7 @@ class AmpliPiZonePlayer(Player):
         self._attr_current_media = None
         self._attr_powered = True
         self._attr_volume_muted = False
+        self._auto_muted = False
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -285,7 +300,10 @@ class AmpliPiZonePlayer(Player):
         self._attr_name = self._zone_display_name(zone, self._zone_id)
         self._build_source_list()
         self._attr_volume_level = self._db_to_volume(zone.vol)
-        self._attr_volume_muted = zone.mute
+        # while paused/stopped the zone is muted to silence the amplifier (see
+        # _set_auto_mute); report the user's own mute state, not that workaround's, so the
+        # player does not appear muted just because it is paused.
+        self._attr_volume_muted = False if self._auto_muted else zone.mute
         self._attr_powered = zone.source_id != ZONE_OFF
         self._source_id = zone.source_id if zone.source_id >= 0 else None
         if self._source_id is None:
@@ -360,6 +378,31 @@ class AmpliPiZonePlayer(Player):
         await self._prov.api.set_zones(
             MultiZoneUpdate(zones=zone_ids, update=ZoneUpdate(source_id=source_id, mute=False))
         )
+
+    async def _set_auto_mute(self, muted: bool) -> None:
+        """
+        Mute or unmute this zone (and its grouped members) around pause/stop.
+
+        Stopping the AmpliPi stream leaves the zones connected to a now-silent source,
+        which the amplifier renders as an audible hum. Muting the zones while nothing is
+        playing silences that. Only a mute we applied ourselves is ever lifted again, so a
+        mute the user set stays untouched, and the mute we apply is hidden from the
+        reported state (see update_from_status). An AmpliPi failure here is not worth
+        aborting the transport command over.
+
+        :param muted: True to mute for pause/stop, False to restore on resume.
+        """
+        if muted:
+            # nothing to do if we already muted, or if the zone is muted by the user
+            if self._auto_muted or self._attr_volume_muted:
+                return
+        elif not self._auto_muted:
+            return
+        with suppress(*AMPLIPI_API_ERRORS):
+            await self._prov.api.set_zones(
+                MultiZoneUpdate(zones=self._member_zone_ids(), update=ZoneUpdate(mute=muted))
+            )
+            self._auto_muted = muted
 
     def _dissolve_group(self) -> None:
         """Clear this player's group and refresh any former members."""
