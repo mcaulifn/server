@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from music_assistant.providers.amplipi.constants import (
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
+
+LOGGER = logging.getLogger(__name__)
 
 # how long the form waits for an AmpliPi to answer on mDNS before falling back to the
 # default hostname; kept short so setup does not appear to hang on a network without one.
@@ -67,11 +70,19 @@ async def _discover_host(session: SetupSession) -> str:
         MDNS_TYPE, MDNS_NAME, timeout=_DISCOVERY_TIMEOUT
     )
     if discovery_info is None:
+        LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_NAME, DEFAULT_HOST)
         return DEFAULT_HOST
     hostname = (discovery_info.server or "").rstrip(".")
     if hostname and await _is_resolvable(hostname):
+        LOGGER.debug("Discovered AmpliPi at %s", hostname)
         return hostname
-    return get_primary_ip_address_from_zeroconf(discovery_info) or DEFAULT_HOST
+    address = get_primary_ip_address_from_zeroconf(discovery_info)
+    LOGGER.debug(
+        "Discovered AmpliPi advertising %s, which does not resolve here; offering %s",
+        hostname or "no hostname",
+        address or DEFAULT_HOST,
+    )
+    return address or DEFAULT_HOST
 
 
 async def _is_resolvable(hostname: str) -> bool:
