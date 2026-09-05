@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from ipaddress import IPv4Address
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -10,9 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
+from zeroconf import IPVersion
 
 from music_assistant.providers.amplipi import setup, setup_flow
-from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME, MA_STREAM_TYPE
+from music_assistant.providers.amplipi.constants import (
+    CONF_HOST,
+    DEFAULT_HOST,
+    MA_STREAM_NAME,
+    MA_STREAM_TYPE,
+)
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
 
@@ -36,6 +43,24 @@ def _provider() -> AmpliPiPlayerProvider:
     prov._streams = []
     prov._stream_locks = {}
     return prov
+
+
+def _discovery_info(
+    server: str = "amplipi.local.", address: str | None = "192.168.1.50"
+) -> SimpleNamespace:
+    """Build a lightweight stand-in for the mDNS service info of an AmpliPi."""
+    addresses = [IPv4Address(address)] if address else []
+    return SimpleNamespace(
+        server=server,
+        ip_addresses_by_version=lambda version: addresses if version == IPVersion.V4Only else [],
+    )
+
+
+def _setup_session(discovery_info: SimpleNamespace | None) -> MagicMock:
+    """Build a setup session whose mDNS lookup yields the given service info."""
+    session = MagicMock()
+    session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=discovery_info)
+    return session
 
 
 class TestHandleAsyncInit:
@@ -403,6 +428,79 @@ class TestRemoveMaStreams:
 
         prov.api.delete_stream.assert_awaited_once_with(7)
         assert prov._ma_streams == {}
+
+
+class TestHostDiscovery:
+    """Test the mDNS lookup that prefills the host field in the setup flow."""
+
+    async def test_prefers_the_advertised_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The hostname outlives a DHCP lease, so it wins over the advertised address."""
+        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=True))
+        assert await setup_flow._discover_host(_setup_session(_discovery_info())) == "amplipi.local"
+
+    async def test_falls_back_to_the_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A host that cannot resolve .local names is better served by the address."""
+        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
+        session = _setup_session(_discovery_info())
+        assert await setup_flow._discover_host(session) == "192.168.1.50"
+
+    async def test_falls_back_to_the_default_without_discovery(self) -> None:
+        """With no AmpliPi on the network the user still gets the conventional hostname."""
+        assert await setup_flow._discover_host(_setup_session(None)) == DEFAULT_HOST
+
+    async def test_falls_back_to_the_default_without_a_usable_address(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A service advertising neither a resolvable name nor an address is no help."""
+        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
+        session = _setup_session(_discovery_info(server="", address=None))
+        assert await setup_flow._discover_host(session) == DEFAULT_HOST
+
+    async def test_unresolvable_name_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A name the resolver rejects must be reported as unresolvable, not raise."""
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "getaddrinfo", AsyncMock(side_effect=OSError("no such host")))
+        assert await setup_flow._is_resolvable("amplipi.local") is False
+
+
+class TestSetupFlowPrefill:
+    """Test that the collected host form is seeded from discovery."""
+
+    @staticmethod
+    def _session(setup_data: dict[str, str]) -> MagicMock:
+        """Build a session that submits whatever the form was prefilled with."""
+        session = MagicMock()
+        session.context.setup_data = setup_data
+        session.finish = AsyncMock(return_value={})
+
+        async def _form(entries: list[object], **_kwargs: object) -> dict[str, object]:
+            host = next(e for e in entries if e.key == CONF_HOST)  # type: ignore[attr-defined]
+            return {CONF_HOST: host.value}  # type: ignore[attr-defined]
+
+        session.form = AsyncMock(side_effect=_form)
+        return session
+
+    async def test_form_is_prefilled_with_the_discovered_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh setup should offer the discovered controller rather than an empty field."""
+        monkeypatch.setattr(setup_flow, "_discover_host", AsyncMock(return_value="amplipi.local"))
+        session = self._session({})
+        await setup_flow.run_setup(session)
+        entries = session.form.await_args.args[0]
+        host = next(e for e in entries if e.key == CONF_HOST)
+        assert host.value == "amplipi.local"
+
+    async def test_a_known_host_is_not_rediscovered(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reconfiguring keeps the host already collected, without searching the network."""
+        discover = AsyncMock(return_value="amplipi.local")
+        monkeypatch.setattr(setup_flow, "_discover_host", discover)
+        session = self._session({CONF_HOST: "10.0.0.5"})
+        await setup_flow.run_setup(session)
+        discover.assert_not_awaited()
+        entries = session.form.await_args.args[0]
+        host = next(e for e in entries if e.key == CONF_HOST)
+        assert host.value == "10.0.0.5"
 
 
 class TestModuleEntryPoints:

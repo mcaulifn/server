@@ -16,6 +16,14 @@ AMPLIPI_API_ERRORS = (AmpliPiError, aiohttp.ClientError, TimeoutError, Validatio
 
 CONF_HOST = "host"
 
+# AmpliPi advertises its REST API over mDNS as the service "amplipi-api" under the generic
+# _http._tcp type (it has no type of its own), which is what the setup flow looks for to
+# prefill the host. The advertised hostname is preferred over its IP address, which is
+# typically a DHCP lease and goes stale once it is reassigned.
+MDNS_TYPE = "_http._tcp.local."
+MDNS_NAME = "amplipi-api"
+DEFAULT_HOST = "amplipi.local"
+
 # AmpliPi zone source_id sentinels (mirrors the AmpliPi server constants):
 # a zone connected to a source uses its source_id (0..3),
 # SOURCE_DISCONNECTED means "powered on but no source connected" (zone is silent),
