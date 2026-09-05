@@ -25,6 +25,9 @@ LOGGER = logging.getLogger(__name__)
 _DISCOVERY_TIMEOUT = 3.0
 # how often the mDNS cache is re-checked while waiting for the browser to fill it
 _DISCOVERY_POLL_INTERVAL = 0.25
+# how long a name lookup may take before the name counts as unresolvable; the form is not
+# published until this returns, so a stalled resolver must not be waited on indefinitely.
+_RESOLVE_TIMEOUT = 2.0
 
 _ENTRIES = (
     ConfigEntry(
@@ -73,12 +76,13 @@ async def _discover_host(session: SetupSession) -> str:
         LOGGER.debug("Discovered AmpliPi at %s", hostname)
         return hostname
     address = get_primary_ip_address_from_zeroconf(discovery_info)
+    host = _as_url_host(address) if address else DEFAULT_HOST
     LOGGER.debug(
         "Discovered AmpliPi advertising %s, which does not resolve here; offering %s",
         hostname or "no hostname",
-        address or DEFAULT_HOST,
+        host,
     )
-    return address or DEFAULT_HOST
+    return host
 
 
 async def _find_amplipi(session: SetupSession) -> AsyncServiceInfo | None:
@@ -90,24 +94,44 @@ async def _find_amplipi(session: SetupSession) -> AsyncServiceInfo | None:
     to that type, so the shared browser is normally already filling the cache; the poll
     covers a cache that is still cold when setup is opened.
     """
+    loop = asyncio.get_running_loop()
     zeroconf = session.mass.discovery.aiozc.zeroconf
-    deadline = asyncio.get_running_loop().time() + _DISCOVERY_TIMEOUT
+    deadline = loop.time() + _DISCOVERY_TIMEOUT
     while True:
         for mdns_name in set(zeroconf.cache.cache):
             if not mdns_name.endswith(MDNS_TYPE) or mdns_name == MDNS_TYPE:
                 continue
+            # spend only what is left of the budget, so a stale record that no longer
+            # answers cannot extend the wait past _DISCOVERY_TIMEOUT
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
             info = AsyncServiceInfo(MDNS_TYPE, mdns_name)
-            if await info.async_request(zeroconf, 3000):
+            if await info.async_request(zeroconf, remaining * 1000):
                 return info
-        if asyncio.get_running_loop().time() >= deadline:
+        if loop.time() >= deadline:
             return None
         await asyncio.sleep(_DISCOVERY_POLL_INTERVAL)
+
+
+def _as_url_host(address: str) -> str:
+    """
+    Return an address in the form a URL can carry.
+
+    The provider builds its endpoint as "http://<host>/api", which an IPv6 literal only
+    survives in brackets.
+
+    :param address: The address discovered over mDNS.
+    """
+    return f"[{address}]" if ":" in address else address
 
 
 async def _is_resolvable(hostname: str) -> bool:
     """Return whether the host running Music Assistant can resolve the given hostname."""
     try:
-        await asyncio.get_running_loop().getaddrinfo(hostname, None)
-    except OSError:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(hostname, None), timeout=_RESOLVE_TIMEOUT
+        )
+    except OSError, TimeoutError:
         return False
     return True

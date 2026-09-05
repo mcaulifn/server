@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -47,14 +47,17 @@ def _provider() -> AmpliPiPlayerProvider:
 
 
 def _discovery_info(
-    server: str = "amplipi.local.", address: str | None = "192.168.11.148"
+    server: str = "amplipi.local.",
+    address: str | None = "192.168.11.148",
+    v6_address: str | None = None,
 ) -> SimpleNamespace:
     """Build a lightweight stand-in for the resolved mDNS record of an AmpliPi."""
-    addresses = [IPv4Address(address)] if address else []
+    v4 = [IPv4Address(address)] if address else []
+    v6 = [IPv6Address(v6_address)] if v6_address else []
     return SimpleNamespace(
         server=server,
         async_request=AsyncMock(return_value=True),
-        ip_addresses_by_version=lambda version: addresses if version == IPVersion.V4Only else [],
+        ip_addresses_by_version=lambda version: v4 if version == IPVersion.V4Only else v6,
     )
 
 
@@ -508,6 +511,48 @@ class TestHostDiscovery:
         """A name the resolver rejects must be reported as unresolvable, not raise."""
         loop = asyncio.get_running_loop()
         monkeypatch.setattr(loop, "getaddrinfo", AsyncMock(side_effect=OSError("no such host")))
+        assert await setup_flow._is_resolvable("amplipi.local") is False
+
+    async def test_ipv6_address_is_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The provider builds "http://<host>/api", which needs a bracketed IPv6 literal."""
+        _patch_resolution(monkeypatch, _discovery_info(address=None, v6_address="fd00::1"))
+        monkeypatch.setattr(setup_flow, "_is_resolvable", AsyncMock(return_value=False))
+        session = _setup_session(_cache_with_amplipi())
+        assert await setup_flow._discover_host(session) == "[fd00::1]"
+
+    async def test_a_stale_record_cannot_outlast_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Records that no longer answer must share one deadline, not a timeout each."""
+        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.05)
+        budgets: list[float] = []
+
+        class _Unanswered:
+            def __init__(self, *_args: object) -> None:
+                pass
+
+            async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+                budgets.append(timeout)
+                await asyncio.sleep(0.03)
+                return False
+
+        monkeypatch.setattr(setup_flow, "AsyncServiceInfo", _Unanswered)
+        cache = {f"amplipi-{index}.{MDNS_TYPE}": None for index in range(5)}
+        assert await setup_flow._discover_host(_setup_session(cache)) == DEFAULT_HOST
+        # each attempt is handed what is left of the budget, and it keeps shrinking
+        assert budgets == sorted(budgets, reverse=True)
+        assert max(budgets) <= 0.05 * 1000
+
+    async def test_a_stalled_resolver_is_not_waited_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The form is published after this, so a hung resolver must not hold setup open."""
+        monkeypatch.setattr(setup_flow, "_RESOLVE_TIMEOUT", 0.01)
+
+        async def _never(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", _never)
         assert await setup_flow._is_resolvable("amplipi.local") is False
 
 
