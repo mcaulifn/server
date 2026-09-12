@@ -1031,6 +1031,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("bluesound", True),
     ("heos", True),
     ("wiim", True),
+    ("amplipi", True),
     ("party", False),
     # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
     # under-spec host has the auto-created config removed again at load time.

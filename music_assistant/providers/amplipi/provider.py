@@ -17,12 +17,13 @@ from .constants import (
     AMPLIPI_API_ERRORS,
     CONF_HOST,
     CONF_MDNS_NAME,
+    DISCOVERY_TIMEOUT,
     EXCLUDED_SELECTABLE_STREAM_TYPES,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
     POLL_INTERVAL,
 )
-from .mdns import controller_id, controller_matches_host
+from .mdns import controller_host, controller_id, controller_matches_host, unclaimed_controller
 from .player import AmpliPiZonePlayer
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ class AmpliPiPlayerProvider(PlayerProvider):
         self._ma_streams = {}
         self._streams = []
         self._stream_locks = {}
-        host = cast("str", self.get_setup_value(CONF_HOST))
+        host = cast("str | None", self.get_setup_value(CONF_HOST)) or await self._discover_host()
         if host.startswith(("http://", "https://")):
             # a full URL is used as-is, but a schemed host with no path (e.g.
             # "https://amplipi.local") still needs the AmpliPi "/api" base appended
@@ -215,6 +216,16 @@ class AmpliPiPlayerProvider(PlayerProvider):
             if player.player_id == player_id:
                 return zone_id
         return None
+
+    async def _discover_host(self) -> str:
+        """Bind this instance to a controller found on the network and return its host."""
+        controller = await unclaimed_controller(self.mass, self.instance_id, DISCOVERY_TIMEOUT)
+        if controller is None or (host := controller_host(controller)) is None:
+            raise SetupFailedError("No AmpliPi controller found on the network")
+        self.logger.info("Discovered AmpliPi %s at %s", controller.name, host)
+        self._update_setup_data(CONF_HOST, host)
+        self._update_setup_data(CONF_MDNS_NAME, controller_id(controller))
+        return host
 
     async def _poll_loop(self) -> None:
         """Poll the AmpliPi controller for state updates and propagate them to the players."""

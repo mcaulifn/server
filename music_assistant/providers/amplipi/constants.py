@@ -21,6 +21,8 @@ CONF_MDNS_NAME = "mdns_name"
 # (e.g. "amplipi-b8:27:eb:8f:8d:85._amplipi._tcp.local.").
 MDNS_TYPE = "_amplipi._tcp.local."
 DEFAULT_HOST = "amplipi.local"
+# how long setup and an instance without a host wait for a controller to answer on mDNS
+DISCOVERY_TIMEOUT = 3.0
 
 # AmpliPi zone source_id sentinels (mirrors the AmpliPi server constants):
 # a zone connected to a source uses its source_id (0..3),

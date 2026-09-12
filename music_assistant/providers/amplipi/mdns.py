@@ -17,6 +17,35 @@ if TYPE_CHECKING:
 _RESOLVE_TIMEOUT_MS = 1000
 
 
+async def find_controllers(mass: MusicAssistant, timeout: float) -> list[AsyncServiceInfo]:
+    """
+    Return every AmpliPi controller reachable on the network, waiting for a first answer.
+
+    :param mass: The MusicAssistant instance.
+    :param timeout: How long to wait for the first controller to answer, in seconds.
+    """
+    if await mass.discovery.async_find_mdns_service(MDNS_TYPE, timeout=timeout):
+        return await discovered_controllers(mass)
+    return []
+
+
+async def unclaimed_controller(
+    mass: MusicAssistant, own_instance_id: str | None, timeout: float
+) -> AsyncServiceInfo | None:
+    """
+    Return the first AmpliPi controller no other instance is set up for, or None.
+
+    :param mass: The MusicAssistant instance.
+    :param own_instance_id: The instance looking for a controller, whose own claim is ignored.
+    :param timeout: How long to wait for the first controller to answer, in seconds.
+    """
+    claimed = claimed_controllers(mass, own_instance_id)
+    for controller in await find_controllers(mass, timeout):
+        if controller_id(controller) not in claimed:
+            return controller
+    return None
+
+
 async def discovered_controllers(mass: MusicAssistant) -> list[AsyncServiceInfo]:
     """
     Return every AmpliPi controller currently reachable on the network.

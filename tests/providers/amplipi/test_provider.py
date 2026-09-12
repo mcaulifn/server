@@ -6,7 +6,7 @@ import asyncio
 from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
@@ -595,32 +595,104 @@ class TestClaimedControllers:
         assert mdns.claimed_controllers(mass, None) == {"amplipi-aa._amplipi._tcp.local."}
 
 
-class TestDiscoverControllers:
-    """Test the setup flow's wait for a first controller before enumerating the cache."""
+class TestFindControllers:
+    """Test the wait for a first controller before enumerating the cache."""
 
     async def test_enumerates_the_cache_once_a_controller_answers(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The wait is only for the first record; the cache then yields every controller."""
-        session = MagicMock()
-        session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=_discovery_info())
+        mass = MagicMock()
+        mass.discovery.async_find_mdns_service = AsyncMock(return_value=_discovery_info())
         controllers = [_discovery_info(), _discovery_info(name="amplipi-bb._amplipi._tcp.local.")]
         scan = AsyncMock(return_value=controllers)
-        monkeypatch.setattr(setup_flow, "discovered_controllers", scan)
-        assert await setup_flow._discover_controllers(session) == controllers
-        session.mass.discovery.async_find_mdns_service.assert_awaited_once_with(
-            MDNS_TYPE, timeout=setup_flow._DISCOVERY_TIMEOUT
-        )
-        scan.assert_awaited_once_with(session.mass)
+        monkeypatch.setattr(mdns, "discovered_controllers", scan)
+        assert await mdns.find_controllers(mass, 2.5) == controllers
+        mass.discovery.async_find_mdns_service.assert_awaited_once_with(MDNS_TYPE, timeout=2.5)
+        scan.assert_awaited_once_with(mass)
 
     async def test_no_answer_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without any AmpliPi answering in time, the cache is not consulted at all."""
-        session = MagicMock()
-        session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
+        mass = MagicMock()
+        mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
         scan = AsyncMock()
-        monkeypatch.setattr(setup_flow, "discovered_controllers", scan)
-        assert await setup_flow._discover_controllers(session) == []
+        monkeypatch.setattr(mdns, "discovered_controllers", scan)
+        assert await mdns.find_controllers(mass, 2.5) == []
         scan.assert_not_awaited()
+
+
+class TestUnclaimedController:
+    """Test picking a controller no other instance is set up for."""
+
+    async def test_skips_claimed_controllers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The first controller not claimed by another instance wins."""
+        first = _discovery_info(name="amplipi-aa._amplipi._tcp.local.")
+        second = _discovery_info(name="amplipi-bb._amplipi._tcp.local.")
+        monkeypatch.setattr(mdns, "find_controllers", AsyncMock(return_value=[first, second]))
+        monkeypatch.setattr(mdns, "claimed_controllers", lambda *_args: {first.name.lower()})
+        assert await mdns.unclaimed_controller(MagicMock(), "me", 1.0) is second
+
+    async def test_none_when_all_are_claimed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With every controller taken there is nothing to bind to."""
+        info = _discovery_info()
+        monkeypatch.setattr(mdns, "find_controllers", AsyncMock(return_value=[info]))
+        monkeypatch.setattr(mdns, "claimed_controllers", lambda *_args: {info.name.lower()})
+        assert await mdns.unclaimed_controller(MagicMock(), "me", 1.0) is None
+
+
+class TestHostDiscoveryAtLoad:
+    """Test an instance without a host (auto-created) binding itself to a controller."""
+
+    @staticmethod
+    def _provider_without_host() -> AmpliPiPlayerProvider:
+        prov = _provider()
+        prov.get_setup_value = MagicMock(side_effect=lambda _key, default=None: default)  # type: ignore[method-assign]
+        prov._update_setup_data = MagicMock()  # type: ignore[method-assign]
+        return prov
+
+    async def test_binds_to_the_first_free_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The discovered host and identity are persisted so the instance stays bound to it."""
+        prov = self._provider_without_host()
+        info = _discovery_info()
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.provider.unclaimed_controller",
+            AsyncMock(return_value=info),
+        )
+        assert await prov._discover_host() == "amplipi.local"
+        cast("MagicMock", prov._update_setup_data).assert_has_calls(
+            [call(CONF_HOST, "amplipi.local"), call(CONF_MDNS_NAME, info.name.lower())]
+        )
+
+    async def test_fails_setup_without_a_free_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No controller to bind to is a setup failure, which Music Assistant retries."""
+        prov = self._provider_without_host()
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.provider.unclaimed_controller",
+            AsyncMock(return_value=None),
+        )
+        with pytest.raises(SetupFailedError):
+            await prov._discover_host()
+        cast("MagicMock", prov._update_setup_data).assert_not_called()
+
+    async def test_init_discovers_when_the_host_is_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty host (the auto-created instance) is resolved before connecting."""
+        prov = self._provider_without_host()
+        prov._discover_host = AsyncMock(return_value="amplipi.local")  # type: ignore[method-assign]
+        fake_api = MagicMock()
+        fake_api.get_status = AsyncMock(return_value="STATUS")
+        created: dict[str, object] = {}
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.provider.AmpliPi",
+            lambda **kwargs: (created.update(kwargs), fake_api)[1],
+        )
+        await prov.handle_async_init()
+        assert created["endpoint"] == "http://amplipi.local/api"
 
 
 class TestMdnsBackfill:
@@ -692,9 +764,7 @@ class TestSetupFlowPrefill:
         monkeypatch: pytest.MonkeyPatch, controllers: list[AsyncServiceInfo], claimed: set[str]
     ) -> None:
         """Stub the network and stored-config lookups of the setup flow."""
-        monkeypatch.setattr(
-            setup_flow, "_discover_controllers", AsyncMock(return_value=controllers)
-        )
+        monkeypatch.setattr(setup_flow, "find_controllers", AsyncMock(return_value=controllers))
         monkeypatch.setattr(setup_flow, "claimed_controllers", lambda *_args: claimed)
 
     async def test_form_is_prefilled_with_the_discovered_host(
